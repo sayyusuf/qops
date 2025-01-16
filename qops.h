@@ -4,42 +4,45 @@
 #include <stddef.h>
 
 #define QOPS_MAX_WORKER	0xffff
+#define QNODE_BUFF_DEFSIZE	64;
 
 struct qnode
 {
 	struct	qnode	*next;
-	void	(*cleanup_node)(void *);
 	int	(*func)(void *);
 	void	(*cleanup)(void *);
 	void	(*err)(void *, int);
 	void	*data;
 };
 
-void
-qnode_destroy(struct qnode *node);
+struct	qnode_buff
+{
+	size_t			sz;
+	size_t			ri;
+	size_t			wi;
+	struct qnode_buff	*next;
+	struct qnode		nodev[];
+};
 
 int
 qnode_exec(struct qnode *node);
 
-struct qnode	*
-qnode_new(void *data, int (*func)(void *), void (*cleanup)(void *), void (*err)(void *, int));
-
-
 struct threadsafeq
 {
-	pthread_mutex_t	lock;
-	struct qnode	*head;
-	struct qnode	*tail;
-	void		(*signal)(void *);
-	void		*signal_data;
-	size_t		n;		
+	pthread_mutex_t		lock;
+	struct qnode_buff	*head;
+	struct qnode_buff	*tail;
+	void			(*signal)(void *);
+	void			*signal_data;
+	size_t			n;
+	size_t			buff_sz;
 };
 
-void
-threadsafeq_append(struct threadsafeq *q, struct qnode *new);
+int
+threadsafeq_append(struct threadsafeq *q, struct qnode *node);
 
-struct qnode	*
-threadsafeq_remove(struct threadsafeq *q);
+int
+threadsafeq_remove(struct threadsafeq *q, struct qnode *node);
 
 size_t
 threadsafeq_size(struct threadsafeq *q);
@@ -48,7 +51,7 @@ void
 threadsafeq_destroy(struct threadsafeq *q);
 
 struct threadsafeq	*
-threadsafeq_new(void);
+threadsafeq_new(size_t buff_sz);
 
 
 struct worker_pool

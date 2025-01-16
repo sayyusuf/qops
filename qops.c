@@ -5,14 +5,38 @@
 
 #include <qops.h>
 
-void
-qnode_destroy(struct qnode *node)
+struct qnode_buff	*
+qnode_buff_new(size_t	size)
 {
-	if (node->cleanup)
-		node->cleanup(node->data);
-	if (node->cleanup_node)
-		node->cleanup_node(node);
+	struct qnode_buff	*qbuff;
+
+	if (!size)
+		size = QNODE_BUFF_DEFSIZE;
+	qbuff = malloc(sizeof (*qbuff) + (sizeof (struct qnode) * size));
+	if (!qbuff)
+		return (NULL);
+	qbuff->sz = size;
+	qbuff->ri = 0;
+	qbuff->wi = 0;
+	qbuff->next = NULL;
+	return (qbuff);
 }
+
+void
+qnode_buff_destroy(struct qnode_buff *qbuff)
+{
+	struct qnode	*node;
+	if (!qbuff)
+		return ;
+	while (qbuff->ri < qbuff->wi)
+	{
+		node = qbuff->nodev + qbuff->ri++;
+		if (node->cleanup)
+			node->cleanup(node->data);
+	}
+	free(qbuff);
+}
+
 
 int
 qnode_exec(struct qnode *node)
@@ -23,69 +47,73 @@ qnode_exec(struct qnode *node)
 	if (node->func)
 	{
 		 ret = node->func(node->data);
-		 if (node->err && ret < 0)
+		 if (node->err && ret)
 			 node->err(node->data, ret);
 	}
-	qnode_destroy(node);
+	if (node->cleanup)
+		node->cleanup(node->data);
 	return  (ret);
 }
 
-
-struct qnode	*
-qnode_new(void *data, int (*func)(void *), void (*cleanup)(void *), void (*err)(void *, int))
+int
+threadsafeq_append(struct threadsafeq *q, struct qnode *node)
 {
-	struct qnode	*node;
+	struct qnode_buff	*curr;
+	int			ret;
 
-	node = malloc(sizeof (*node));
-	if (!node)
-		return (NULL);
-	*node = (struct qnode){.next = NULL, .cleanup_node = free, .func = func, .cleanup = cleanup, .err = err, .data = data};
-	return  (node);
-}
-
-
-
-
-void
-threadsafeq_append(struct threadsafeq *q, struct qnode *new)
-{
-	if (!q || !new)
-		return ;
+	if (!q || !node)
+		return (-1);
+	ret = 0;
 	pthread_mutex_lock(&q->lock);
 	if (!q->head)
 	{
-		q->head = new;
-		q->tail = new;
-		q->n = 1;
+		q->head = qnode_buff_new(q->buff_sz);
+		q->tail = q->head;
+		q->n = 0;
 	}
-	else
+	curr = q->tail;
+	if (curr  && curr->wi == curr->sz)
 	{
-		q->tail->next = new;
-		q->tail = new;
+		curr->next = qnode_buff_new(q->buff_sz);
+		curr = curr->next;
+	}
+	if (curr)
+	{
+		q->tail = curr;
+		curr->nodev[curr->wi++] = *node;
 		++q->n;
 	}
+	else
+		ret = -1;
 	pthread_mutex_unlock(&q->lock);
-	if (q->signal)
+	if (!ret && q->signal)
 		q->signal(q->signal_data);
+	return (ret);
 }
 
-struct qnode	*
-threadsafeq_remove(struct threadsafeq *q) 
+int
+threadsafeq_remove(struct threadsafeq *q, struct qnode *node) 
 {
-	struct qnode	*ret;
+	struct qnode_buff	*curr;
+	int			ret;
 
-	if (!q)
-		return (NULL);
+	if (!q || !node)
+		return (-1);
+	ret = 0;
 	pthread_mutex_lock(&q->lock);
-	if (!q->head)
-		ret = NULL;
-	else
+	if (q->n)
 	{
-		ret = q->head;
-		q->head = ret->next;
-		ret->next = NULL;
+		curr = q->head;
+		*node = curr->nodev[curr->ri++];
 		--q->n;
+		if (curr->wi == curr->ri)
+		{
+			q->head = curr->next;
+			qnode_buff_destroy(curr);
+		}
 	}
+	else
+		ret = -1;
 	pthread_mutex_unlock(&q->lock);
 	return (ret);
 }
@@ -109,15 +137,15 @@ void
 threadsafeq_destroy(struct threadsafeq *q)
 {
 
-	struct qnode	*node;
+	struct qnode_buff	*buff;
 	if (!q)
 		return ;
 	pthread_mutex_lock(&q->lock);
 	while (q->head)
 	{
-	 	node = q->head;
+	 	buff = q->head;
 		q->head = q->head->next;
-		qnode_destroy(node);
+		qnode_buff_destroy(buff);
 	}
 	pthread_mutex_unlock(&q->lock);
 	pthread_mutex_destroy(&q->lock);
@@ -125,7 +153,7 @@ threadsafeq_destroy(struct threadsafeq *q)
 }
 
 struct threadsafeq	*
-threadsafeq_new(void)
+threadsafeq_new(size_t buff_sz)
 {
 	struct threadsafeq *q;
 
@@ -139,6 +167,7 @@ threadsafeq_new(void)
 	q->signal = NULL;
 	q->signal_data = NULL;
 	q->n = 0;
+	q->buff_sz = buff_sz;
 	return (q);
 mutex_err:
 	free(q);
@@ -161,7 +190,9 @@ worker_pool_on_finish(void *data)
 static void
 worker_pool_on_append(void *data)
 {
-	struct worker_pool	*pool = data;
+	struct worker_pool	*pool;
+
+	pool = data;
 	pthread_mutex_lock(&pool->lock);
 	pthread_cond_signal(&pool->cond);
 	pthread_mutex_unlock(&pool->lock);
@@ -171,9 +202,9 @@ static void	*
 worker_pool_loop(void *data)
 {
 	struct worker_pool	*pool;
-	void			*node;
+	struct qnode		node;
 	int			done;
-
+	int			ret;
 	pthread_cleanup_push(worker_pool_on_finish, data);
 	pool = data;
 	done = 0;
@@ -181,22 +212,20 @@ worker_pool_loop(void *data)
 	{
 		pthread_mutex_lock(&pool->lock);
 		done = pool->done;
-		pthread_mutex_unlock(&pool->lock);
-		if (done)
-			break;
-		node = threadsafeq_remove(pool->q);
-		if (!node)
+		if (!done)
 		{
-			pthread_mutex_lock(&pool->lock);
-			++pool->idle;
-			if (!pool->done)
+			ret = threadsafeq_remove(pool->q, &node);
+			if (ret)
+			{
+				++pool->idle;
 				pthread_cond_wait(&pool->cond, &pool->lock);
-			done = pool->done;
-			--pool->idle;
-			pthread_mutex_unlock(&pool->lock);
-			continue ;
+				done = pool->done;
+				--pool->idle;
+			}
 		}
-		qnode_exec(node);
+		pthread_mutex_unlock(&pool->lock);
+		if (!ret && !done) 
+			qnode_exec(&node);
 	}
 	pthread_cleanup_pop(1);
 	return (NULL);
@@ -215,16 +244,18 @@ worker_pool_finish_request(struct worker_pool *pool, size_t timeout_ms)
 	pthread_mutex_unlock(&pool->lock);
 	f = 0;
 	timeout_us = timeout_ms * 10;
-	do
+	while (1)
 	{
 		pthread_mutex_lock(&pool->lock);
 		f = !pool->nof_worker;
 		pthread_mutex_unlock(&pool->lock);
 		if (f)
 			return (0);
+		if (!timeout_us)
+			break ;
 		usleep(10);
 		timeout_us -= 10;
-	} while  (!timeout_us);
+	}
 	return (-1);
 }
 
@@ -238,17 +269,19 @@ worker_pool_is_idle(struct worker_pool *pool, size_t timeout_ms)
 		return (0);
 	f = 0;
 	timeout_us = timeout_ms * 10;
-	do
+	while (1)
 	{
 		pthread_mutex_lock(&pool->lock);
 		f = ((pool->nof_worker == pool->idle) && !threadsafeq_size(pool->q));
 		pthread_mutex_unlock(&pool->lock);
 		if (f)
-			return (0);
+			return (1);
+		if (!timeout_us)
+			break ;
 		usleep(10);
 		timeout_us -= 10;
-	} while  (!timeout_us);
-	return (-1);
+	}
+	return (0);
 }
 
 
