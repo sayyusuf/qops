@@ -2,8 +2,9 @@
 #define  QOPS_H
 
 #include <stddef.h>
+#include <pthread.h>
 
-#define QOPS_MAX_WORKER	0xffff
+#define QOPS_MAX_WORKER		0xffff
 #define QNODE_BUFF_DEFSIZE	64;
 
 struct qnode
@@ -32,7 +33,8 @@ struct threadsafeq
 	pthread_mutex_t		lock;
 	struct qnode_buff	*head;
 	struct qnode_buff	*tail;
-	void			(*signal)(void *);
+	void			(*on_append)(void *);
+	void			(*on_broadcast)(void *);
 	void			*signal_data;
 	size_t			n;
 	size_t			buff_sz;
@@ -40,6 +42,9 @@ struct threadsafeq
 
 int
 threadsafeq_append(struct threadsafeq *q, struct qnode *node);
+
+int
+threadsafeq_append_quiet(struct threadsafeq *q, struct qnode *node);
 
 int
 threadsafeq_remove(struct threadsafeq *q, struct qnode *node);
@@ -72,7 +77,13 @@ void
 worker_pool_destroy(struct worker_pool *pool);
 
 void
+worker_pool_broadcast(struct worker_pool *pool);
+
+void
 worker_pool_append(struct worker_pool *pool, struct qnode *node);
+
+void
+worker_pool_append_quiet(struct worker_pool *pool, struct qnode *node);
 
 struct worker_pool	*
 worker_pool_new(struct threadsafeq *q, size_t n);

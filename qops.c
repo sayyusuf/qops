@@ -5,7 +5,7 @@
 
 #include <qops.h>
 
-struct qnode_buff	*
+static struct qnode_buff	*
 qnode_buff_new(size_t	size)
 {
 	struct qnode_buff	*qbuff;
@@ -22,7 +22,7 @@ qnode_buff_new(size_t	size)
 	return (qbuff);
 }
 
-void
+static void
 qnode_buff_destroy(struct qnode_buff *qbuff)
 {
 	struct qnode	*node;
@@ -55,8 +55,9 @@ qnode_exec(struct qnode *node)
 	return  (ret);
 }
 
-int
-threadsafeq_append(struct threadsafeq *q, struct qnode *node)
+
+static int
+threadsafeq_append_ops(struct threadsafeq *q, struct qnode *node, int signal_f)
 {
 	struct qnode_buff	*curr;
 	int			ret;
@@ -86,9 +87,34 @@ threadsafeq_append(struct threadsafeq *q, struct qnode *node)
 	else
 		ret = -1;
 	pthread_mutex_unlock(&q->lock);
-	if (!ret && q->signal)
-		q->signal(q->signal_data);
+	if (signal_f && !ret && q->on_append)
+		q->on_append(q->signal_data);
 	return (ret);
+}
+
+int
+threadsafeq_append(struct threadsafeq *q, struct qnode *node)
+{
+	if (!q || !node)
+		return (-1);
+	return (threadsafeq_append_ops(q, node, 1));
+}
+
+int
+threadsafeq_append_quiet(struct threadsafeq *q, struct qnode *node)
+{
+	if (!q || !node)
+		return (-1);
+	return (threadsafeq_append_ops(q, node, 0));
+}
+
+void
+threadsafeq_broadcast(struct threadsafeq *q)
+{
+	if (!q)
+		return ;
+	if (q->on_broadcast)
+		q->on_broadcast(q->signal_data);
 }
 
 int
@@ -164,7 +190,8 @@ threadsafeq_new(size_t buff_sz)
 		goto mutex_err; 
 	q->head = NULL;
 	q->tail = NULL;
-	q->signal = NULL;
+	q->on_append = NULL;
+	q->on_broadcast = NULL;
 	q->signal_data = NULL;
 	q->n = 0;
 	q->buff_sz = buff_sz;
@@ -195,6 +222,17 @@ worker_pool_on_append(void *data)
 	pool = data;
 	pthread_mutex_lock(&pool->lock);
 	pthread_cond_signal(&pool->cond);
+	pthread_mutex_unlock(&pool->lock);
+}
+
+static void
+worker_pool_on_broadcast(void *data)
+{
+	struct worker_pool	*pool;
+
+	pool = data;
+	pthread_mutex_lock(&pool->lock);
+	pthread_cond_broadcast(&pool->cond);
 	pthread_mutex_unlock(&pool->lock);
 }
 
@@ -292,7 +330,8 @@ worker_pool_destroy(struct worker_pool *pool)
 		return ;
 	while (worker_pool_finish_request(pool, 100))
 		;
-	pool->q->signal = NULL;;
+	pool->q->on_append = NULL;
+	pool->q->on_broadcast = NULL;
 	pool->q->signal_data = NULL;
 	pthread_mutex_destroy(&pool->lock);
 	pthread_cond_destroy(&pool->cond);
@@ -301,11 +340,25 @@ worker_pool_destroy(struct worker_pool *pool)
 
 
 void
+worker_pool_broadcast(struct worker_pool *pool)
+{
+	worker_pool_on_broadcast(pool);
+}
+
+void
 worker_pool_append(struct worker_pool *pool, struct qnode *node)
 {
 	if (!pool)
 		return ;
 	threadsafeq_append(pool->q, node);
+}
+
+void
+worker_pool_append_quiet(struct worker_pool *pool, struct qnode *node)
+{
+	if (!pool)
+		return ;
+	threadsafeq_append_quiet(pool->q, node);
 }
 
 struct worker_pool	*
@@ -337,7 +390,8 @@ worker_pool_new(struct threadsafeq *q, size_t n)
 		pthread_detach(pool->tid[i++]);
 		++(pool->nof_worker);
 	}
-	pool->q->signal = worker_pool_on_append;
+	pool->q->on_append = worker_pool_on_append;
+	pool->q->on_broadcast = worker_pool_on_broadcast;
 	pool->q->signal_data = pool;
 	return (pool);
 thread_err:
