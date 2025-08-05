@@ -357,14 +357,25 @@ workerp_append_quiet(struct workerp *pool, struct qnode *node)
 }
 
 struct workerp	*
-workerp_new(struct threadsafeq *q, size_t n)
+workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority)
 {
-	struct workerp	*pool;
-	size_t		i;
+	struct workerp		*pool;
+	pthread_attr_t		attr;
+	struct sched_param	param;
+	size_t			i;
 
 	if (!q || !n)
 		goto ptr_err;
 	n = n > QOPS_MAX_WORKER ? QOPS_MAX_WORKER : n;
+	if (pthread_attr_init(&attr))
+		goto attr_err;
+	if (pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED))
+		goto set_attr_err;
+	if (pthread_attr_setschedpolicy(&attr, sched))
+		goto set_attr_err;
+	param.sched_priority = priority > WORKERP_MAX_PRIORITY? WORKERP_MAX_PRIORITY: priority;
+	if (pthread_attr_setschedparam(&attr, &param))
+		goto set_attr_err;
 	pool = malloc(sizeof(*pool) + (sizeof(pthread_t) * n));
 	*pool = (struct workerp){0};
 	if (!pool)
@@ -380,7 +391,7 @@ workerp_new(struct threadsafeq *q, size_t n)
 	i = 0;
 	while (i < n)
 	{
-		if (0 != pthread_create(&pool->tid[i], NULL, &workerp_loop, pool))
+		if (0 != pthread_create(&pool->tid[i], &attr, &workerp_loop, pool))
 			goto thread_err;
 		pthread_detach(pool->tid[i++]);
 		++(pool->nof_worker);
@@ -388,6 +399,7 @@ workerp_new(struct threadsafeq *q, size_t n)
 	pool->q->on_append = workerp_on_append;
 	pool->q->on_broadcast = workerp_on_broadcast;
 	pool->q->signal_data = pool;
+	pthread_attr_destroy(&attr);
 	return (pool);
 thread_err:
 	workerp_finish_request(pool, 1000);
@@ -397,6 +409,15 @@ mutex_err:
 cond_err:
 	free(pool);
 alloc_err:
+set_attr_err:
+	pthread_attr_destroy(&attr);
+attr_err:
 ptr_err:
 	return (NULL);
+}
+
+struct workerp	*
+workerp_new(struct threadsafeq *q, size_t n)
+{
+	return (workerp_new_sched(q, n, WORKERP_SCHED_OTHER, 0));
 }

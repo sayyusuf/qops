@@ -1,4 +1,4 @@
-MMVERSION = 1.0.3
+MMVERSION = 1.0.4
 EXTRAFLAGS +=
 DEBUGFLAGS +=
 
@@ -23,7 +23,7 @@ ifndef	EXLIBS
 endif
 
 SHELL = /usr/bin/bash
-LIBDIR = $(PWD)
+LIBDIR = $(shell pwd)
 MAKEFLAGS=	--no-print-directory
 
 
@@ -158,7 +158,7 @@ modulename:
 	echo $(MODULE_NAME)
 
 pwd:
-	echo $(PWD)
+	echo $(shell pwd)
 
 #//////////////////////////////// TEST SECTION \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 

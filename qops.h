@@ -4,8 +4,13 @@
 #include <stddef.h>
 #include <pthread.h>
 
-#define QOPS_MAX_WORKER 0xffff
-#define QNODE_BUFF_DEFSIZE 64;
+#define QOPS_MAX_WORKER		0xffff
+#define QNODE_BUFF_DEFSIZE	64
+#define WORKERP_MAX_PRIORITY	99
+
+#define WORKERP_SCHED_OTHER	SCHED_OTHER
+#define WORKERP_SCHED_RR	SCHED_RR
+#define WORKERP_SCHED_FIFO	SCHED_FIFO
 
 struct qnode
 {
@@ -204,4 +209,6 @@ workerp_append_quiet(struct workerp *pool, struct qnode *node);
 struct workerp *
 workerp_new(struct threadsafeq *q, size_t n);
 
+struct workerp *
+workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority);
 #endif
