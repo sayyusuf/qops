@@ -136,9 +136,9 @@ struct workerp
 	struct threadsafeq	*q;
 	pthread_cond_t		cond;
 	pthread_mutex_t		lock;
-	volatile size_t		nof_worker;
-	volatile size_t		idle;
-	volatile int		done;
+	_Atomic size_t		nof_worker;
+	_Atomic size_t		idle;
+	_Atomic int		done;
 	pthread_t		tid[];
 };
 

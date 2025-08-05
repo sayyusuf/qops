@@ -189,13 +189,13 @@ $(TESTDIR)/start_test.sh:
 	'echo "test started..."' $Q\
 	'for src in $$TESTSRC;' $Q\
 	'do' $Q\
-	'	rm "$$src".* 2>/dev/null ;' $Q\
+	'	rm -f "$$src".* 2>/dev/null ;' $Q\
 	'	echo -en "" [ $$G .. $$N ] $$B$$src $$N' $Q\
 	'	$$CC $$CFLAGS $$EXTRAFLAGS $$src -I ../ $$DEPSINC -Wl,--no-as-needed $$LIBPATH $$DEPSLIBSPATH -Wl,--as-needed $$EXLIBS -o "$$src".out 2>"$$src".err' $Q\
 	'	if [ $$? -ne 0 ]; then' $Q\
 	'		echo -e "\\r" [ $$R CE $$N ]' $Q\
 	'	else' $Q\
-	'		rm "$$src".err;' $Q\
+	'		rm -f "$$src".err;' $Q\
 	'		STR=$$((time (./"$$src".out 2>"$$src".err 1>"$$src".log)) 2>&1)' $Q\
 	'		RET=$$?' $Q\
 	'		echo -en $$D"\\r"' $Q\

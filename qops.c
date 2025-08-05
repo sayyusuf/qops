@@ -2,7 +2,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stddef.h>
-
+#include <stdatomic.h>
 #include <qops.h>
 
 static struct qnode_buff *
@@ -201,12 +201,7 @@ alloc_err:
 static void
 workerp_on_finish(void *data)
 {
-	struct workerp	*pool;
-
-	pool = data;
-	pthread_mutex_lock(&pool->lock);
-	--((struct workerp *)data)->nof_worker;
-	pthread_mutex_unlock(&pool->lock);
+	atomic_fetch_sub(&((struct workerp *)data)->nof_worker, 1);
 }
 
 static void
@@ -236,29 +231,22 @@ workerp_loop(void *data)
 {
 	struct workerp	*pool;
 	struct qnode	node;
-	int		done;
 	int		ret;
 
 	pthread_cleanup_push(workerp_on_finish, data);
 	pool = data;
-	done = 0;
-	while (!done)
+	while (!atomic_load(&pool->done))
 	{
-		pthread_mutex_lock(&pool->lock);
-		done = pool->done;
-		if (!done)
+		ret = threadsafeq_remove(pool->q, &node);
+		if (ret)
 		{
-			ret = threadsafeq_remove(pool->q, &node);
-			if (ret)
-			{
-				++pool->idle;
-				pthread_cond_wait(&pool->cond, &pool->lock);
-				done = pool->done;
-				--pool->idle;
-			}
+			pthread_mutex_lock(&pool->lock);
+			atomic_fetch_add(&pool->idle, 1);
+			pthread_cond_wait(&pool->cond, &pool->lock);
+			atomic_fetch_sub(&pool->idle, 1);
+			pthread_mutex_unlock(&pool->lock);
 		}
-		pthread_mutex_unlock(&pool->lock);
-		if (!ret && !done)
+		else
 			qnode_exec(&node);
 	}
 	pthread_cleanup_pop(1);
@@ -268,20 +256,17 @@ workerp_loop(void *data)
 static int
 workerp_finish_request(struct workerp *pool, size_t timeout_ms)
 {
-	int	f;
-
-	pthread_mutex_lock(&pool->lock);
-	pool->done = 1;
-	pthread_cond_broadcast(&pool->cond);
-	pthread_mutex_unlock(&pool->lock);
-	f = 0;
+	atomic_store(&pool->done, 1);
 	while (1)
 	{
-		pthread_mutex_lock(&pool->lock);
-		f = !pool->nof_worker;
-		pthread_mutex_unlock(&pool->lock);
-		if (f)
+		if (!atomic_load(&pool->nof_worker))
 			return (0);
+		else
+		{
+			pthread_mutex_lock(&pool->lock);
+			pthread_cond_broadcast(&pool->cond);
+			pthread_mutex_unlock(&pool->lock);
+		}
 		if (!timeout_ms)
 			break ;
 		usleep(1000);
@@ -304,9 +289,7 @@ workerp_is_idle(struct workerp *pool, size_t timeout_ms)
 		i = 10;
 		while (i--)
 		{
-			pthread_mutex_lock(&pool->lock);
-			f = ((pool->nof_worker == pool->idle) && !threadsafeq_size(pool->q));
-			pthread_mutex_unlock(&pool->lock);
+			f = ((atomic_load(&pool->nof_worker) == atomic_load(&pool->idle)) && !threadsafeq_size(pool->q));
 			if (f || !timeout_ms)
 				goto endof_loop;
 			usleep(100);

@@ -9,13 +9,13 @@ TESTSRC=$(ls *.c)
 echo "test started..." 
 for src in $TESTSRC; 
 do 
-	rm "$src".* 2>/dev/null ; 
+	rm -f "$src".* 2>/dev/null ; 
 	echo -en "" [ $G .. $N ] $B$src $N 
 	$CC $CFLAGS $EXTRAFLAGS $src -I ../ $DEPSINC -Wl,--no-as-needed $LIBPATH $DEPSLIBSPATH -Wl,--as-needed $EXLIBS -o "$src".out 2>"$src".err 
 	if [ $? -ne 0 ]; then 
 		echo -e "\r" [ $R CE $N ] 
 	else 
-		rm "$src".err; 
+		rm -f "$src".err; 
 		STR=$((time (./"$src".out 2>"$src".err 1>"$src".log)) 2>&1) 
 		RET=$? 
 		echo -en $D"\r" 
