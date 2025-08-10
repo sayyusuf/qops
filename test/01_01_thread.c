@@ -6,6 +6,8 @@
 #define LOOP 10000000
 #define LOOP2 1000
 
+_Atomic int inc = 0;
+
 int
 func(void *data)
 {
@@ -17,6 +19,7 @@ func(void *data)
 	k = 1;
 	while (i < LOOP2)
 		i = i / k + 1;
+	++inc;
 	return (0);
 }
 
@@ -39,5 +42,7 @@ int main()
 		;
 	workerp_destroy(p);
 	threadsafeq_destroy(q);
+	if (inc != LOOP)
+		return (1);
 	return (0);
 }

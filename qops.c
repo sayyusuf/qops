@@ -5,6 +5,9 @@
 #include <stdatomic.h>
 #include <qops.h>
 
+#define THREADSAFEQ_LOCK(q)	pthread_mutex_lock(&q->lock)
+#define THREADSAFEQ_UNLOCK(q)	pthread_mutex_unlock(&q->lock)
+
 static struct qnode_buff *
 qnode_buff_new(size_t size)
 {
@@ -63,7 +66,7 @@ threadsafeq_append_ops(struct threadsafeq *q, struct qnode *node, int signal_f)
 	if (!q || !node)
 		return (-1);
 	ret = 0;
-	pthread_mutex_lock(&q->lock);
+	THREADSAFEQ_LOCK(q);
 	if (!q->head)
 	{
 		q->head = qnode_buff_new(q->buff_sz);
@@ -84,7 +87,7 @@ threadsafeq_append_ops(struct threadsafeq *q, struct qnode *node, int signal_f)
 	}
 	else
 		ret = -1;
-	pthread_mutex_unlock(&q->lock);
+	THREADSAFEQ_UNLOCK(q);
 	if (signal_f && !ret && q->on_append)
 		q->on_append(q->signal_data);
 	return (ret);
@@ -124,7 +127,7 @@ threadsafeq_remove(struct threadsafeq *q, struct qnode *node)
 	if (!q || !node)
 		return (-1);
 	ret = 0;
-	pthread_mutex_lock(&q->lock);
+	THREADSAFEQ_LOCK(q);
 	if (q->n)
 	{
 		curr = q->head;
@@ -138,7 +141,7 @@ threadsafeq_remove(struct threadsafeq *q, struct qnode *node)
 	}
 	else
 		ret = -1;
-	pthread_mutex_unlock(&q->lock);
+	THREADSAFEQ_UNLOCK(q);
 	return (ret);
 }
 
@@ -149,9 +152,9 @@ threadsafeq_size(struct threadsafeq *q)
 
 	if (!q)
 		return (0);
-	pthread_mutex_lock(&q->lock);
+	THREADSAFEQ_LOCK(q);
 	n = q->n;
-	pthread_mutex_unlock(&q->lock);
+	THREADSAFEQ_UNLOCK(q);
 	return (n);
 }
 
@@ -162,14 +165,14 @@ threadsafeq_destroy(struct threadsafeq *q)
 
 	if (!q)
 		return ;
-	pthread_mutex_lock(&q->lock);
+	THREADSAFEQ_LOCK(q);
 	while (q->head)
 	{
 		buff = q->head;
 		q->head = q->head->next;
 		qnode_buff_destroy(buff);
 	}
-	pthread_mutex_unlock(&q->lock);
+	THREADSAFEQ_UNLOCK(q);
 	pthread_mutex_destroy(&q->lock);
 	free(q);
 }
