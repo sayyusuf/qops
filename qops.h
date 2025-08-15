@@ -1,6 +1,10 @@
 #ifndef QOPS_H
 #define QOPS_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stddef.h>
 #include <pthread.h>
 
@@ -111,14 +115,14 @@ size_t
 threadsafeq_size(struct threadsafeq *q);
 
 /**
- * @brief Destroys the thread-safe queue and cleans up all resources.
+ * @brief Deletes the thread-safe queue and cleans up all resources.
  *
  * This function frees the memory used by the queue and its buffers.
  *
- * @param q A pointer to the `threadsafeq` to destroy.
+ * @param q A pointer to the `threadsafeq` to delete.
  */
 void
-threadsafeq_destroy(struct threadsafeq *q);
+threadsafeq_delete(struct threadsafeq *q);
 
 /**
  * @brief Creates a new thread-safe queue.
@@ -138,6 +142,7 @@ struct workerp
 	pthread_mutex_t		lock;
 	_Atomic size_t		nof_worker;
 	_Atomic size_t		idle;
+	_Atomic size_t		started;
 	_Atomic int		done;
 	pthread_t		tid[];
 };
@@ -155,15 +160,15 @@ _Bool
 workerp_is_idle(struct workerp *pool, size_t timeout_ms);
 
 /**
- * @brief Destroys the worker pool and cleans up all resources.
+ * @brief Deletes the worker pool and cleans up all resources.
  *
- * This function destroys the worker pool, stops all workers in 100 ms, and frees allocated memory.
+ * This function deletes the worker pool, stops all workers in 100 ms, and frees allocated memory.
  *
- * @param pool A pointer to the worker pool to destroy.
- * @return 0 on success, -1 on busy.
+ * @param pool A pointer to the worker pool to delete.
+ * @return 1 on success, 0 on busy.
  */
 int
-workerp_destroy(struct workerp *pool);
+workerp_delete(struct workerp *pool);
 
 /**
  * @brief Broadcasts a signal to all workers in the pool.
@@ -209,6 +214,39 @@ workerp_append_quiet(struct workerp *pool, struct qnode *node);
 struct workerp *
 workerp_new(struct threadsafeq *q, size_t n);
 
+/**
+ * @brief Creates a new worker pool with custom scheduling parameters.
+ *
+ * This function creates a new worker pool similar to workerp_new(), but allows specifying
+ * a custom thread scheduling policy and priority for each worker.
+ *
+ * Supported scheduling policies:
+ * - WORKERP_SCHED_OTHER (default time-sharing policy)
+ * - WORKERP_SCHED_RR (real-time round-robin)
+ * - WORKERP_SCHED_FIFO (real-time first-in-first-out)
+ *
+ * @param q A pointer to the `threadsafeq` for task distribution.
+ * @param n The number of worker threads to create.
+ * @param sched The scheduling policy to use for worker threads. Use one of the WORKERP_SCHED_* macros.
+ * @param priority The thread priority (used with real-time policies such as RR or FIFO). Ignored for SCHED_OTHER.
+ * @return A pointer to the newly created worker pool, or NULL if allocation or thread setup fails.
+ */
 struct workerp *
 workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority);
+
+/**
+ * @brief Gets the index of the currently executing worker thread.
+ *
+ * Returns a thread-local index that uniquely identifies the calling thread
+ * within its worker pool. This is useful for assigning per-thread data or tasks.
+ *
+ * @return The index of the current worker thread, or -1 if called from a non-worker thread.
+ */
+int
+workerp_get_local_index(void);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif

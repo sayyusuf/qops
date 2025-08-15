@@ -1,3 +1,7 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <pthread.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -26,7 +30,7 @@ qnode_buff_new(size_t size)
 }
 
 static void
-qnode_buff_destroy(struct qnode_buff *qbuff)
+qnode_buff_delete(struct qnode_buff *qbuff)
 {
 	struct qnode	*node;
 	if (!qbuff)
@@ -136,7 +140,7 @@ threadsafeq_remove(struct threadsafeq *q, struct qnode *node)
 		if (curr->wi == curr->ri)
 		{
 			q->head = curr->next;
-			qnode_buff_destroy(curr);
+			qnode_buff_delete(curr);
 		}
 	}
 	else
@@ -159,7 +163,7 @@ threadsafeq_size(struct threadsafeq *q)
 }
 
 void
-threadsafeq_destroy(struct threadsafeq *q)
+threadsafeq_delete(struct threadsafeq *q)
 {
 	struct qnode_buff	*buff;
 
@@ -170,7 +174,7 @@ threadsafeq_destroy(struct threadsafeq *q)
 	{
 		buff = q->head;
 		q->head = q->head->next;
-		qnode_buff_destroy(buff);
+		qnode_buff_delete(buff);
 	}
 	THREADSAFEQ_UNLOCK(q);
 	pthread_mutex_destroy(&q->lock);
@@ -200,6 +204,8 @@ mutex_err:
 alloc_err:
 	return (NULL);
 }
+
+_Thread_local static int workerp_local_index = -1;
 
 static void
 workerp_on_finish(void *data)
@@ -236,8 +242,9 @@ workerp_loop(void *data)
 	struct qnode	node;
 	int		ret;
 
-	pthread_cleanup_push(workerp_on_finish, data);
 	pool = data;
+	workerp_local_index = atomic_fetch_add(&pool->started, 1);
+	pthread_cleanup_push(workerp_on_finish, data);
 	while (!atomic_load(&pool->done))
 	{
 		ret = threadsafeq_remove(pool->q, &node);
@@ -305,7 +312,13 @@ endof_loop:
 }
 
 int
-workerp_destroy(struct workerp *pool)
+workerp_get_local_index(void)
+{
+	return (workerp_local_index);
+}
+
+int
+workerp_delete(struct workerp *pool)
 {
 	if (!pool)
 		return (0);
@@ -363,13 +376,9 @@ workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority)
 	if (pthread_attr_setschedparam(&attr, &param))
 		goto set_attr_err;
 	pool = malloc(sizeof(*pool) + (sizeof(pthread_t) * n));
-	*pool = (struct workerp){0};
 	if (!pool)
 		goto alloc_err;
-	pool->q = q;
-	pool->nof_worker = 0;
-	pool->idle = 0;
-	pool->done = 0;
+	*pool = (struct workerp){.q = q, .nof_worker = 0, .idle = 0, .started = 0, .done = 0};
 	if (0 != pthread_cond_init(&pool->cond, NULL))
 		goto cond_err;
 	if (0 != pthread_mutex_init(&pool->lock, NULL))
@@ -407,3 +416,8 @@ workerp_new(struct threadsafeq *q, size_t n)
 {
 	return (workerp_new_sched(q, n, WORKERP_SCHED_OTHER, 0));
 }
+
+#ifdef __cplusplus
+}
+#endif
+

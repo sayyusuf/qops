@@ -4,6 +4,7 @@
 int func(void *data)
 {
 	printf("%s\n", (char *)data);
+	printf("worker index = %d\n", workerp_get_local_index());
 	return 0; // If the return value is not 0, the error function is called
 }
 
@@ -38,7 +39,8 @@ int main()
 	threadsafeq_append(queue, &node2);
 	while (!workerp_is_idle(pool, 100)) // Wait 100 ms to finish all tasks in the loop
 		;
-	workerp_destroy(pool);
-	threadsafeq_destroy(queue);
+	printf("main index = %d\n", workerp_get_local_index());
+	workerp_delete(pool);
+	threadsafeq_delete(queue);
 	return 0;
 }

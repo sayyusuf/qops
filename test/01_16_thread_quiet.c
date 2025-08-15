@@ -40,8 +40,8 @@ int main()
 	workerp_broadcast(p);
 	while (!workerp_is_idle(p, 100))
 		;
-	workerp_destroy(p);
-	threadsafeq_destroy(q);
+	workerp_delete(p);
+	threadsafeq_delete(q);
 	if (inc != LOOP)
 		return (1);
 	return (0);
