@@ -7,6 +7,7 @@ extern "C" {
 
 #include <stddef.h>
 #include <pthread.h>
+#include <sched.h>
 
 #define QOPS_MAX_WORKER		0xffff
 #define QNODE_BUFF_DEFSIZE	64
@@ -20,9 +21,9 @@ struct qnode
 {
 	struct qnode	*next;			/* next node */
 	void		*data;			/* Data specific to the task */
-	int	(*func)(void *data);		/* Task function */
-	void	(*cleanup)(void *data);		/* Cleanup callback */
-	void	(*err)(void *data, int errno);	/* Error handling callback */
+	int	(*func)(void *data);		/* Task function. First call */
+	void	(*err)(void *data, int errcode);/* Error handling callback. Second call if first call returns non-zero. The return value of func is passed as errcode. */
+	void	(*cleanup)(void *data);		/* Cleanup callback. Third call */
 };
 
 struct qnode_buff
@@ -144,6 +145,7 @@ struct workerp
 	_Atomic size_t		idle;
 	_Atomic size_t		started;
 	_Atomic int		done;
+	_Atomic int		ready;
 	pthread_t		tid[];
 };
 
@@ -165,7 +167,7 @@ workerp_is_idle(struct workerp *pool, size_t timeout_ms);
  * This function deletes the worker pool, stops all workers in 100 ms, and frees allocated memory.
  *
  * @param pool A pointer to the worker pool to delete.
- * @return 1 on success, 0 on busy.
+ * @return 0 on success, -1 on busy.
  */
 int
 workerp_delete(struct workerp *pool);

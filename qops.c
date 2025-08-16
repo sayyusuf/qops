@@ -214,24 +214,29 @@ workerp_on_finish(void *data)
 }
 
 static void
-workerp_on_append(void *data)
+workerp_on_append(struct workerp *pool)
 {
-	struct workerp	*pool;
-
-	pool = data;
 	pthread_mutex_lock(&pool->lock);
 	pthread_cond_signal(&pool->cond);
 	pthread_mutex_unlock(&pool->lock);
 }
 
 static void
-workerp_on_broadcast(void *data)
+workerp_on_broadcast(struct workerp *pool)
 {
-	struct workerp	*pool;
-
-	pool = data;
 	pthread_mutex_lock(&pool->lock);
 	pthread_cond_broadcast(&pool->cond);
+	pthread_mutex_unlock(&pool->lock);
+}
+
+static void
+workerp_wait(struct workerp *pool, _Atomic int *val)
+{
+	pthread_mutex_lock(&pool->lock);
+	atomic_fetch_add(&pool->idle, 1);
+	if (!atomic_load(val))
+		pthread_cond_wait(&pool->cond, &pool->lock);
+	atomic_fetch_sub(&pool->idle, 1);
 	pthread_mutex_unlock(&pool->lock);
 }
 
@@ -245,17 +250,12 @@ workerp_loop(void *data)
 	pool = data;
 	workerp_local_index = atomic_fetch_add(&pool->started, 1);
 	pthread_cleanup_push(workerp_on_finish, data);
+	workerp_wait(pool, &pool->ready);
 	while (!atomic_load(&pool->done))
 	{
 		ret = threadsafeq_remove(pool->q, &node);
 		if (ret)
-		{
-			pthread_mutex_lock(&pool->lock);
-			atomic_fetch_add(&pool->idle, 1);
-			pthread_cond_wait(&pool->cond, &pool->lock);
-			atomic_fetch_sub(&pool->idle, 1);
-			pthread_mutex_unlock(&pool->lock);
-		}
+			workerp_wait(pool, &pool->done);
 		else
 			qnode_exec(&node);
 	}
@@ -267,16 +267,13 @@ static int
 workerp_finish_request(struct workerp *pool, size_t timeout_ms)
 {
 	atomic_store(&pool->done, 1);
+	atomic_store(&pool->ready, 1);
 	while (1)
 	{
 		if (!atomic_load(&pool->nof_worker))
 			return (0);
 		else
-		{
-			pthread_mutex_lock(&pool->lock);
-			pthread_cond_broadcast(&pool->cond);
-			pthread_mutex_unlock(&pool->lock);
-		}
+			workerp_on_broadcast(pool);
 		if (!timeout_ms)
 			break ;
 		usleep(1000);
@@ -378,7 +375,7 @@ workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority)
 	pool = malloc(sizeof(*pool) + (sizeof(pthread_t) * n));
 	if (!pool)
 		goto alloc_err;
-	*pool = (struct workerp){.q = q, .nof_worker = 0, .idle = 0, .started = 0, .done = 0};
+	*pool = (struct workerp){.q = q, .nof_worker = 0, .idle = 0, .started = 0, .done = 0, .ready = 0};
 	if (0 != pthread_cond_init(&pool->cond, NULL))
 		goto cond_err;
 	if (0 != pthread_mutex_init(&pool->lock, NULL))
@@ -389,15 +386,18 @@ workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority)
 		if (0 != pthread_create(&pool->tid[i], &attr, &workerp_loop, pool))
 			goto thread_err;
 		pthread_detach(pool->tid[i++]);
-		++(pool->nof_worker);
+		atomic_fetch_add(&pool->nof_worker, 1);
 	}
-	pool->q->on_append = workerp_on_append;
-	pool->q->on_broadcast = workerp_on_broadcast;
+	pool->q->on_append = (void (*)(void *))workerp_on_append;
+	pool->q->on_broadcast = (void (*)(void *))workerp_on_broadcast;
 	pool->q->signal_data = pool;
+	atomic_store(&pool->ready, 1);
+	workerp_on_broadcast(pool);
 	pthread_attr_destroy(&attr);
 	return (pool);
 thread_err:
-	workerp_finish_request(pool, 1000);
+	while (workerp_finish_request(pool, 1))
+		;
 	pthread_mutex_destroy(&pool->lock);
 mutex_err:
 	pthread_cond_destroy(&pool->cond);
