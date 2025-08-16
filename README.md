@@ -24,7 +24,7 @@ This queue supports the following operations:
 - **Remove**: Remove a node from the queue.
 - **Size**: Get the number of tasks in the queue.
 - **Broadcast**: Notify all workers.
-- **Destroy**: Clean up resources and free memory.
+- **Delete**: Clean up resources and free memory.
 
 ### 2. `Worker Pool`
 
@@ -82,8 +82,8 @@ int main()
 	threadsafeq_append(queue, &node2);
 	while (!workerp_is_idle(pool, 100)) // Wait 100 ms to finish all tasks in the loop
 		;
-	workerp_destroy(pool);
-	threadsafeq_destroy(queue);
+	workerp_delete(pool);
+	threadsafeq_delete(queue);
 	return 0; // EXIT_SUCCESS
 }
 ```
