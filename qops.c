@@ -137,7 +137,7 @@ threadsafeq_remove(struct threadsafeq *q, struct qnode *node)
 		curr = q->head;
 		*node = curr->nodev[curr->ri++];
 		--q->n;
-		if (curr->wi == curr->ri)
+		if (curr->sz == curr->ri)
 		{
 			q->head = curr->next;
 			qnode_buff_delete(curr);
