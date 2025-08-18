@@ -145,7 +145,6 @@ struct workerp
 	_Atomic size_t		idle;
 	_Atomic size_t		started;
 	_Atomic int		done;
-	_Atomic int		ready;
 	pthread_t		tid[];
 };
 
@@ -246,6 +245,37 @@ workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority);
  */
 int
 workerp_get_local_index(void);
+
+/**
+ * @brief Get the total number of worker threads in the pool.
+ *
+ * Reads the atomic counter that tracks how many worker threads are currently
+ * registered in the pool. The value decreases as workers exit. This does not
+ * distinguish between active and idle workers; it returns the total count.
+ *
+ * Thread-safety: lock-free (atomic read).
+ *
+ * @param pool Pointer to the worker pool instance.
+ * @return Total number of worker threads. Returns 0 if @p pool is NULL.
+ */
+size_t
+workerp_nof_workers(struct workerp *pool);
+
+/**
+ * @brief Get the current number of idle worker threads in the pool.
+ *
+ * Returns the number of workers that are currently idle (i.e., waiting on the
+ * pool's condition variable because the queue is empty). The value is read from
+ * an atomic counter and represents a moment-in-time snapshot; it may change
+ * immediately under contention.
+ *
+ * Thread-safety: lock-free (atomic read).
+ *
+ * @param pool Pointer to the worker pool instance.
+ * @return Number of idle workers. Returns 0 if @p pool is NULL.
+ */
+size_t
+workerp_nof_idle_workers(struct workerp *pool);
 
 #ifdef __cplusplus
 }
