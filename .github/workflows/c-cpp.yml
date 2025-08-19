@@ -8,20 +8,41 @@ on:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: make log dir
+      run: mkdir all_logs
+
     - name: make
       run: make
+
     - name: test
-      run: sudo make test
-    - name: dubug_test thread
+      run: |
+        make fclean
+        sudo make test
+        cp -r test all_logs/test
+
+    - name: debug_test thread
       run: |
         make fclean
         sudo make debug_test
-    - name: dubug_test address
+        cp -r test all_logs/test_thread
+
+    - name: debug_test address
       run: |
         make fclean
         sudo _ADDRESS=1 make debug_test
+        cp -r test all_logs/test_address
+
+    - name: Archive all logs
+      run: tar -cJf all_logs.tar.xz all_logs
+
+    - name: Upload all logs
+      uses: actions/upload-artifact@v4
+      with:
+        name: all-logs
+        path: all_logs.tar.xz
+
