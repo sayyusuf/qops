@@ -1,4 +1,4 @@
-# Threadsafe Queue and Worker Pool
+# Threadsafe Queue and Thread Pool
 
 This project provides a thread-safe queue implementation along with a worker pool system to process tasks concurrently. It uses POSIX threads (`pthread`) and is designed to be simple yet effective for multi-threaded task execution.
 
