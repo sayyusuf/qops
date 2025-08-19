@@ -12,7 +12,7 @@
 #define LOOP2	1000
 
 #define BSZ 0
-#define WSZ 1
+#define WSZ 16
 
 _Atomic int erc = 0;
 _Atomic int inc = 0;
@@ -80,15 +80,16 @@ main()
 		return (2);
 	}
 	q = threadsafeq_new(BSZ);
-	p = workerp_new_sched(q, WSZ, WORKERP_SCHED_FIFO, 99);
+	p = workerp_new_sched(q, WSZ, WORKERP_SCHED_RR, 99);
 	i = 0;
 	while (i < LOOP)
 	{
 		char *str = ft_strdup(DATA);
 		struct qnode node = (struct qnode){.func = func, .cleanup = cleanup, .err = error, .data = str};
-		workerp_append(p, &node);
+		workerp_append_quiet(p, &node);
 		i++;
 	}
+	workerp_broadcast(p);
 	while (!workerp_is_idle(p, 100))
 		;
 	workerp_delete(p);

@@ -80,7 +80,7 @@ main()
 		return (2);
 	}
 	q = threadsafeq_new(BSZ);
-	p = workerp_new_sched(q, WSZ, WORKERP_SCHED_FIFO, 99);
+	p = workerp_new_sched(q, WSZ, WORKERP_SCHED_RR, 99);
 	i = 0;
 	while (i < LOOP)
 	{

@@ -12,7 +12,7 @@
 #define LOOP2	1000
 
 #define BSZ 0
-#define WSZ 1
+#define WSZ 16
 
 _Atomic int erc = 0;
 _Atomic int inc = 0;

@@ -12,7 +12,7 @@
 #define LOOP2	1000
 
 #define BSZ 0
-#define WSZ 1
+#define WSZ 16
 
 _Atomic int erc = 0;
 _Atomic int inc = 0;
@@ -80,7 +80,7 @@ main()
 		return (2);
 	}
 	q = threadsafeq_new(BSZ);
-	p = workerp_new_sched(q, WSZ, WORKERP_SCHED_FIFO, 99);
+	p = workerp_new_sched(q, WSZ, WORKERP_SCHED_RR, 99);
 	i = 0;
 	while (i < LOOP)
 	{

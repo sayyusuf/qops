@@ -74,13 +74,8 @@ main()
 	struct workerp		*p;
 	size_t			i;
 
-	if (getuid())
-	{
-		fprintf(stderr, "Run as root\n");
-		return (2);
-	}
 	q = threadsafeq_new(BSZ);
-	p = workerp_new_sched(q, WSZ, WORKERP_SCHED_FIFO, 99);
+	p = workerp_new(q, WSZ);
 	i = 0;
 	while (i < LOOP)
 	{

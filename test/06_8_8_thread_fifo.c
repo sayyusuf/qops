@@ -1,4 +1,3 @@
-
 #include <stddef.h>
 #include <qops.h>
 #include <unistd.h>
@@ -7,28 +6,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define DATA	"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum."
-#define LOOP	1000000
+#define DATA	"Lorem ipsum"
+#define LOOP	10000000
 #define LOOP2	1000
 
 #define BSZ 0
-#define WSZ 1
+#define WSZ 8
 
 _Atomic int erc = 0;
 _Atomic int inc = 0;
+_Atomic int cnt = 0;
 
 int
 func(void *data)
 {
-	volatile float	i;
-	volatile float	k;
-
-	i = 0;
-	k = 1;
 	if (!data || strcmp(DATA, (char *)data))
 		return (-1);
-	while (i < LOOP2)
-		i = i / k + 1;
 	atomic_fetch_add(&inc, 1);
 	return (0);
 }
@@ -45,26 +38,21 @@ error(void *data, int errorcode)
 void
 cleanup(void *data)
 {
-	free(data);
+	(void)data;
 }
 
-char *
-ft_strdup(const char *s)
+int
+func2(void *data)
 {
-	char	*ch;
-	int		i;
+	struct workerp		*p;
 
-	i = 0;
-	ch = (char *)malloc(strlen(s) + 1);
-	if (!ch)
-		return (NULL);
-	while (s[i] != '\0')
+	p = (struct workerp *)data;
+	while (atomic_fetch_add(&cnt, 1) < LOOP)
 	{
-		ch[i] = s[i];
-		i++;
+		struct qnode node = (struct qnode){.func = func, .cleanup = cleanup, .err = error, .data = DATA};
+		workerp_append(p, &node);
 	}
-	ch[i] = '\0';
-	return (ch);
+	return (0);
 }
 
 int
@@ -72,6 +60,8 @@ main()
 {
 	struct threadsafeq	*q;
 	struct workerp		*p;
+	struct threadsafeq	*q2;
+	struct workerp		*p2;
 	size_t			i;
 
 	if (getuid())
@@ -81,18 +71,21 @@ main()
 	}
 	q = threadsafeq_new(BSZ);
 	p = workerp_new_sched(q, WSZ, WORKERP_SCHED_FIFO, 99);
+	q2 = threadsafeq_new(BSZ);
+	p2 = workerp_new(q2, WSZ);
 	i = 0;
-	while (i < LOOP)
+	while (i < WSZ)
 	{
-		char *str = ft_strdup(DATA);
-		struct qnode node = (struct qnode){.func = func, .cleanup = cleanup, .err = error, .data = str};
-		workerp_append(p, &node);
+		struct qnode node = (struct qnode){.func = func2, .cleanup = NULL, .err = NULL, .data = p};
+		workerp_append(p2, &node);
 		i++;
 	}
-	while (!workerp_is_idle(p, 100))
+	while (!workerp_is_idle(p, 100) || !workerp_is_idle(p2, 100))
 		;
 	workerp_delete(p);
 	threadsafeq_delete(q);
+	workerp_delete(p2);
+	threadsafeq_delete(q2);
 	if (atomic_load(&inc) != LOOP || atomic_load(&erc))
 	{
 		fprintf(stderr, "Error: LOOP = %d, inc = %d, erc = %d\n", LOOP, atomic_load(&inc), atomic_load(&erc));

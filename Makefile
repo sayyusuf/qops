@@ -5,10 +5,13 @@ _INC = qops.h
 
 EXLIBS += -lpthread
 
+ifdef _ADDRESS 
+EXTRAFLAGS +=  -O3
+DEBUGFLAGS += -g  -fsanitize=address
+else
 EXTRAFLAGS +=  -O3
 DEBUGFLAGS += -g  -fsanitize=thread
-
-
+endif
 
 #DEP2 = 
 #DEP2LINK = 

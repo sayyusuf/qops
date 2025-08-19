@@ -15,5 +15,13 @@ jobs:
     - uses: actions/checkout@v4
     - name: make
       run: make
-    - name: make test
+    - name: test
       run: sudo make test
+    - name: dubug_test thread
+      run: |
+        make fclean
+        sudo make debug_test
+    - name: dubug_test address
+      run: |
+        make fclean
+        sudo _ADDRESS=1 make debug_test
