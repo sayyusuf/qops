@@ -54,7 +54,7 @@ struct threadsafeq
 	void	(*on_append)(void *);
 	void	(*on_broadcast)(void *);
 	void			*signal_data;
-	size_t			n;
+	_Atomic size_t		n;
 	size_t			buff_sz;
 };
 
@@ -188,8 +188,9 @@ workerp_broadcast(struct workerp *pool);
  *
  * @param pool A pointer to the worker pool.
  * @param node A pointer to the `qnode` representing the task.
+ * @return 0 on success, -1 on failure.
  */
-void
+int
 workerp_append(struct workerp *pool, struct qnode *node);
 
 /**
@@ -199,8 +200,9 @@ workerp_append(struct workerp *pool, struct qnode *node);
  *
  * @param pool A pointer to the worker pool.
  * @param node A pointer to the `qnode` representing the task.
+ * @return 0 on success, -1 on failure.
  */
-void
+int
 workerp_append_quiet(struct workerp *pool, struct qnode *node);
 
 /**

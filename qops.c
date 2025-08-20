@@ -71,23 +71,23 @@ threadsafeq_append_ops(struct threadsafeq *q, struct qnode *node, int signal_f)
 		return (-1);
 	ret = 0;
 	THREADSAFEQ_LOCK(q);
-	if (!q->head)
-	{
-		q->head = qnode_buff_new(q->buff_sz);
-		q->tail = q->head;
-		q->n = 0;
-	}
 	curr = q->tail;
 	if (curr && curr->wi == curr->sz)
 	{
 		curr->next = qnode_buff_new(q->buff_sz);
 		curr = curr->next;
+		q->tail =  curr;
+	}
+	else if (!curr)
+	{
+		curr = qnode_buff_new(q->buff_sz);
+		q->head =  curr;
+		q->tail =  curr;
 	}
 	if (curr)
 	{
-		q->tail = curr;
 		curr->nodev[curr->wi++] = *node;
-		++q->n;
+		atomic_fetch_add(&q->n, 1);
 	}
 	else
 		ret = -1;
@@ -126,40 +126,37 @@ int
 threadsafeq_remove(struct threadsafeq *q, struct qnode *node)
 {
 	struct qnode_buff	*curr;
-	int			ret;
+	size_t			n;
 
 	if (!q || !node)
 		return (-1);
-	ret = 0;
-	THREADSAFEQ_LOCK(q);
-	if (q->n)
+	n = atomic_load(&q->n);
+	while (n)
 	{
+		if (!atomic_compare_exchange_strong(&q->n, &n, n - 1))
+			continue ;
+		THREADSAFEQ_LOCK(q);
 		curr = q->head;
 		*node = curr->nodev[curr->ri++];
-		--q->n;
 		if (curr->sz == curr->ri)
 		{
 			q->head = curr->next;
 			qnode_buff_delete(curr);
+			if (!q->head)
+				q->tail = NULL;
 		}
+		THREADSAFEQ_UNLOCK(q);
+		return (0);
 	}
-	else
-		ret = -1;
-	THREADSAFEQ_UNLOCK(q);
-	return (ret);
+	return (-1);
 }
 
 size_t
 threadsafeq_size(struct threadsafeq *q)
 {
-	size_t	n;
-
 	if (!q)
 		return (0);
-	THREADSAFEQ_LOCK(q);
-	n = q->n;
-	THREADSAFEQ_UNLOCK(q);
-	return (n);
+	return (atomic_load(&q->n));
 }
 
 void
@@ -196,7 +193,7 @@ threadsafeq_new(size_t buff_sz)
 	q->on_append = NULL;
 	q->on_broadcast = NULL;
 	q->signal_data = NULL;
-	q->n = 0;
+	atomic_store(&q->n, 0);
 	q->buff_sz = buff_sz;
 	return (q);
 mutex_err:
@@ -350,20 +347,20 @@ workerp_broadcast(struct workerp *pool)
 	workerp_on_broadcast(pool);
 }
 
-void
+int
 workerp_append(struct workerp *pool, struct qnode *node)
 {
 	if (!pool)
-		return ;
-	threadsafeq_append(pool->q, node);
+		return (-1);
+	return (threadsafeq_append(pool->q, node));
 }
 
-void
+int
 workerp_append_quiet(struct workerp *pool, struct qnode *node)
 {
 	if (!pool)
-		return ;
-	threadsafeq_append_quiet(pool->q, node);
+		return (-1);
+	return (threadsafeq_append_quiet(pool->q, node));
 }
 
 struct workerp	*
