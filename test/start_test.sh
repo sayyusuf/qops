@@ -7,6 +7,7 @@ D='[2K' #CLEAR
 N='[0m' #NO COLOR 
 TESTSRC=$(ls *.c) 
 echo "test started..." 
+GRET=0 
 for src in $TESTSRC; 
 do 
 	rm -f "$src".* 2>/dev/null ; 
@@ -14,6 +15,7 @@ do
 	$CC $CFLAGS $EXTRAFLAGS $src -I ../ $DEPSINC -Wl,--no-as-needed $LIBPATH $DEPSLIBSPATH -Wl,--as-needed $EXLIBS -o "$src".out 2>"$src".err 
 	if [ $? -ne 0 ]; then 
 		echo -e "\r" [ $R CE $N ] 
+		GRET=1 
 	else 
 		rm -f "$src".err; 
 		STR=$((time (./"$src".out 2>"$src".err 1>"$src".log)) 2>&1) 
@@ -25,10 +27,11 @@ do
 			echo -en "\r" [ $Y WR $N ] 
 		else 
 			echo -en "\r" [ $R ER $N ] 
+			GRET=1 
 		fi 
 		STR=$(echo $STR | tr "\n" "|") 
 		echo -e "" $STR "	" $B $src $N 
 	fi 
 done 
 echo "test finished..." 
-exit 0
+exit "$GRET"

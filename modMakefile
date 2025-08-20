@@ -1,4 +1,4 @@
-MMVERSION = 1.0.4
+MMVERSION = 1.0.5
 EXTRAFLAGS +=
 DEBUGFLAGS +=
 
@@ -187,6 +187,7 @@ $(TESTDIR)/start_test.sh:
 	"N='\\033[0m' #NO COLOR" $Q\
 	'TESTSRC=$$(ls *.c)' $Q\
 	'echo "test started..."' $Q\
+	'GRET=0' $Q\
 	'for src in $$TESTSRC;' $Q\
 	'do' $Q\
 	'	rm -f "$$src".* 2>/dev/null ;' $Q\
@@ -194,6 +195,7 @@ $(TESTDIR)/start_test.sh:
 	'	$$CC $$CFLAGS $$EXTRAFLAGS $$src -I ../ $$DEPSINC -Wl,--no-as-needed $$LIBPATH $$DEPSLIBSPATH -Wl,--as-needed $$EXLIBS -o "$$src".out 2>"$$src".err' $Q\
 	'	if [ $$? -ne 0 ]; then' $Q\
 	'		echo -e "\\r" [ $$R CE $$N ]' $Q\
+	'		GRET=1' $Q\
 	'	else' $Q\
 	'		rm -f "$$src".err;' $Q\
 	'		STR=$$((time (./"$$src".out 2>"$$src".err 1>"$$src".log)) 2>&1)' $Q\
@@ -205,13 +207,14 @@ $(TESTDIR)/start_test.sh:
 	'			echo -en "\\r" [ $$Y WR $$N ]' $Q\
 	'		else' $Q\
 	'			echo -en "\\r" [ $$R ER $$N ]' $Q\
+	'			GRET=1' $Q\
 	'		fi' $Q\
 	'		STR=$$(echo $$STR | tr "\\n" "|")' $Q\
 	'		echo -e "" $$STR "\t" $$B $$src $$N' $Q\
 	'	fi' $Q\
 	'done' $Q\
 	'echo "test finished..."' $Q\
-	'exit 0'
+	'exit "$$GRET"'
 	-chmod +x $@
 
 runtest:
