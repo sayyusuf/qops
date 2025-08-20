@@ -7,69 +7,31 @@ on:
     branches: [ "**" ]
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: make
-        run: make
-
   test:
     runs-on: ubuntu-latest
-    needs: build
+    strategy:
+      matrix:
+        type: [normal, thread, address]
     steps:
       - uses: actions/checkout@v4
-      - name: Download build
-        uses: actions/download-artifact@v4
-        with:
-          name: build-output
-      - name: run test
-        run: |
-          make fclean
-          sudo make test
-          tar -cJf test.tar.xz test
-      - name: Upload test logs
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-logs
-          path: test.tar.xz
 
-  test-thread:
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download build
-        uses: actions/download-artifact@v4
-        with:
-          name: build-output
-      - name: run thread sanitizer test
+      - name: Build & Run ${{ matrix.type }} test
         run: |
           make fclean
-          sudo make debug_test
-          tar -cJf test_thread.tar.xz test
-      - name: Upload thread logs
-        uses: actions/upload-artifact@v4
-        with:
-          name: thread-logs
-          path: test_thread.tar.xz
+          if [ "${{ matrix.type }}" = "normal" ]; then
+            sudo make test
+            tar -cJf test.tar.xz test
+          elif [ "${{ matrix.type }}" = "thread" ]; then
+            sudo make debug_test
+            tar -cJf test_thread.tar.xz test
+          elif [ "${{ matrix.type }}" = "address" ]; then
+            sudo _ADDRESS=1 make debug_test
+            tar -cJf test_address.tar.xz test
+          fi
 
-  test-address:
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download build
-        uses: actions/download-artifact@v4
-        with:
-          name: build-output
-      - name: run address sanitizer test
-        run: |
-          make fclean
-          sudo _ADDRESS=1 make debug_test
-          tar -cJf test_address.tar.xz test
-      - name: Upload address logs
+      - name: Upload ${{ matrix.type }} logs
         uses: actions/upload-artifact@v4
         with:
-          name: address-logs
-          path: test_address.tar.xz
+          name: logs-${{ matrix.type }}
+          path: test*.tar.xz
+
