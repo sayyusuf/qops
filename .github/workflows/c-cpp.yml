@@ -9,40 +9,67 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - name: make
+        run: make
 
-    - name: make log dir
-      run: mkdir all_logs
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+      - name: run test
+        run: |
+          make fclean
+          sudo make test
+          tar -cJf test.tar.xz test
+      - name: Upload test logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: test.tar.xz
 
-    - name: make
-      run: make
+  test-thread:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+      - name: run thread sanitizer test
+        run: |
+          make fclean
+          sudo make debug_test
+          tar -cJf test_thread.tar.xz test
+      - name: Upload thread logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: thread-logs
+          path: test_thread.tar.xz
 
-    - name: test
-      run: |
-        make fclean
-        sudo make test
-        cp -r test all_logs/test
-
-    - name: debug_test thread
-      run: |
-        make fclean
-        sudo make debug_test
-        cp -r test all_logs/test_thread
-
-    - name: debug_test address
-      run: |
-        make fclean
-        sudo _ADDRESS=1 make debug_test
-        cp -r test all_logs/test_address
-
-    - name: Archive all logs
-      run: tar -cJf all_logs.tar.xz all_logs
-
-    - name: Upload all logs
-      uses: actions/upload-artifact@v4
-      with:
-        name: all-logs
-        path: all_logs.tar.xz
-
+  test-address:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+      - name: run address sanitizer test
+        run: |
+          make fclean
+          sudo _ADDRESS=1 make debug_test
+          tar -cJf test_address.tar.xz test
+      - name: Upload address logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: address-logs
+          path: test_address.tar.xz
