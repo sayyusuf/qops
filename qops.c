@@ -44,6 +44,48 @@ qnode_buff_delete(struct qnode_buff *qbuff)
 	free(qbuff);
 }
 
+struct qbuff *
+qbuff_new(size_t size)
+{
+	struct qbuff	*qbuff;
+
+	if (!size)
+		size = QNODE_BUFF_DEFSIZE;
+	qbuff = malloc(sizeof (*qbuff) + (sizeof (struct qnode) * size));
+	if (!qbuff)
+		return (NULL);
+	qbuff->sz = size;
+	qbuff->ri = 0;
+	qbuff->wi = 0;
+	return (qbuff);
+}
+
+void
+qbuff_delete(struct qbuff *qbuff)
+{
+	struct qnode	*node;
+	if (!qbuff)
+		return ;
+	while (qbuff->ri < qbuff->wi)
+	{
+		node = qbuff->nodev + qbuff->ri++;
+		if (node->cleanup)
+			node->cleanup(node->data);
+	}
+	free(qbuff);
+}
+
+
+int
+qbuff_write(struct qbuff *qbuff, void *data, int (*func)(void *), void (*err)(void *, int), void (*cleanup)(void *))
+{
+	if (!qbuff || qbuff->wi >= qbuff->sz)
+		return (-1);
+	qbuff->nodev[qbuff->wi++] = (struct qnode){.data = data, .func = func, .err = err, .cleanup = cleanup};
+	return (0);
+}
+
+
 int
 qnode_exec(struct qnode *node)
 {
@@ -58,6 +100,39 @@ qnode_exec(struct qnode *node)
 	}
 	if (node->cleanup)
 		node->cleanup(node->data);
+	return (ret);
+}
+
+static void
+threadsafeq_disconnect(struct threadsafeq *q)
+{
+	if (!q)
+		return;;
+	THREADSAFEQ_LOCK(q);
+	q->signal_data = NULL;
+	q->on_append = NULL;
+	q->on_broadcast = NULL;
+	THREADSAFEQ_UNLOCK(q);
+}
+
+static int
+threadsafeq_connect(struct threadsafeq *q, void *signal_data,  void (*on_append)(void *), void (*on_broadcast)(void *))
+{
+	int	ret;
+
+	if (!q)
+		return (-1);
+	ret = 0;
+	THREADSAFEQ_LOCK(q);
+	if (!q->signal_data && !q->on_append && !q->on_broadcast)
+	{
+		q->signal_data = signal_data;
+		q->on_append = on_append;
+		q->on_broadcast = on_broadcast;
+	}
+	else
+		ret = -1;
+	THREADSAFEQ_UNLOCK(q);
 	return (ret);
 }
 
@@ -275,6 +350,34 @@ workerp_loop(void *data)
 	return (NULL);
 }
 
+static void *
+workerp_loop_exec(void *data)
+{
+	struct workerp	*pool;
+	struct qbuff	*buff;
+	size_t		idx;
+
+	pool = data;
+	workerp_local_index = atomic_fetch_add(&pool->started, 1);
+	pthread_cleanup_push(workerp_on_finish, data);
+	workerp_wait(pool);
+	while (!atomic_load(&pool->done))
+	{
+		buff = atomic_load(&pool->b);
+		if (buff) while (1)
+		{
+			idx = atomic_fetch_add(&buff->ri, 1);
+			if (idx >= buff->wi)
+				break ;
+			qnode_exec(&buff->nodev[idx]);
+		}
+		workerp_wait(pool);
+
+	}
+	pthread_cleanup_pop(1);
+	return (NULL);
+}
+	
 static int
 workerp_finish_request(struct workerp *pool, size_t timeout_ms)
 {
@@ -332,12 +435,25 @@ workerp_delete(struct workerp *pool)
 		return (0);
 	if (workerp_finish_request(pool, 100))
 		return (-1);
-	pool->q->on_append = NULL;
-	pool->q->on_broadcast = NULL;
-	pool->q->signal_data = NULL;
+	threadsafeq_disconnect(pool->q);
 	pthread_mutex_destroy(&pool->lock);
 	pthread_cond_destroy(&pool->cond);
 	free(pool);
+	return (0);
+}
+
+int
+workerp_exec(struct workerp *pool, struct qbuff *buff)
+{
+	if (!pool || pool->q || !buff || !workerp_is_idle(pool, 0))
+		return (-1);
+	atomic_store(&pool->b,  buff);
+	workerp_on_broadcast(pool);
+	while (workerp_nof_workers(pool) == workerp_nof_idle_workers(pool))
+		;
+	while (!workerp_is_idle(pool, 100))
+		;
+	atomic_store(&pool->b,  NULL);
 	return (0);
 }
 
@@ -350,16 +466,12 @@ workerp_broadcast(struct workerp *pool)
 int
 workerp_append(struct workerp *pool, struct qnode *node)
 {
-	if (!pool)
-		return (-1);
 	return (threadsafeq_append(pool->q, node));
 }
 
 int
 workerp_append_quiet(struct workerp *pool, struct qnode *node)
 {
-	if (!pool)
-		return (-1);
 	return (threadsafeq_append_quiet(pool->q, node));
 }
 
@@ -370,9 +482,10 @@ workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority)
 	pthread_attr_t		attr;
 	struct sched_param	param;
 	size_t			i;
+	void *(*loop)(void*);
 
-	if (!q || !n)
-		goto ptr_err;
+	if (!n)
+		goto sz_err;
 	n = n > QOPS_MAX_WORKER ? QOPS_MAX_WORKER : n;
 	if (pthread_attr_init(&attr))
 		goto attr_err;
@@ -386,22 +499,24 @@ workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority)
 	pool = malloc(sizeof(*pool) + (sizeof(pthread_t) * n));
 	if (!pool)
 		goto alloc_err;
-	*pool = (struct workerp){.q = q, .nof_worker = 0, .idle = 0, .started = 0, .done = 0};
+	*pool = (struct workerp){.q = q, .b = NULL, .nof_worker = 0, .idle = 0, .started = 0, .done = 0};
+	if (q && threadsafeq_connect(q, pool, (void (*)(void *))workerp_on_append, (void (*)(void *))workerp_on_broadcast))
+		goto connnect_err;
 	if (0 != pthread_cond_init(&pool->cond, NULL))
 		goto cond_err;
 	if (0 != pthread_mutex_init(&pool->lock, NULL))
 		goto mutex_err;
 	i = 0;
+	loop = workerp_loop_exec;
+	if (q)
+		loop = workerp_loop;
 	while (i < n)
 	{
-		if (0 != pthread_create(&pool->tid[i], &attr, &workerp_loop, pool))
+		if (0 != pthread_create(&pool->tid[i], &attr, loop, pool))
 			goto thread_err;
 		pthread_detach(pool->tid[i++]);
 		atomic_fetch_add(&pool->nof_worker, 1);
 	}
-	pool->q->on_append = (void (*)(void *))workerp_on_append;
-	pool->q->on_broadcast = (void (*)(void *))workerp_on_broadcast;
-	pool->q->signal_data = pool;
 	pthread_attr_destroy(&attr);
 	while (atomic_load(&pool->nof_worker) != atomic_load(&pool->idle))
 		;
@@ -413,12 +528,14 @@ thread_err:
 mutex_err:
 	pthread_cond_destroy(&pool->cond);
 cond_err:
+	threadsafeq_disconnect(q);
+connnect_err:
 	free(pool);
 alloc_err:
 set_attr_err:
 	pthread_attr_destroy(&attr);
 attr_err:
-ptr_err:
+sz_err:
 	return (NULL);
 }
 

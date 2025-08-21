@@ -26,15 +26,6 @@ struct qnode
 	void	(*cleanup)(void *data);		/* Cleanup callback. Third call */
 };
 
-struct qnode_buff
-{
-	size_t			sz;
-	size_t			ri;
-	size_t			wi;
-	struct qnode_buff	*next;
-	struct qnode		nodev[];
-};
-
 /**
  * @brief Executes the task in the node.
  *
@@ -45,6 +36,68 @@ struct qnode_buff
  */
 int
 qnode_exec(struct qnode *node);
+
+struct qnode_buff
+{
+	size_t			sz;
+	size_t			ri;
+	size_t			wi;
+	struct qnode_buff	*next;
+	struct qnode		nodev[];
+};
+
+
+struct qbuff
+{
+	size_t		sz;
+	_Atomic size_t	ri;
+	_Atomic size_t	wi;
+	struct qnode	nodev[];
+};
+
+/**
+ * @brief Allocate a new buffer.
+ *
+ * This function allocates a new buffer.
+ * If `size` is zero, a default size (`QNODE_BUFF_DEFSIZE`) will be used.
+ *
+ * @param size The maximum number of nodes the buffer can contain. If 0, the default size is used.
+ * @return A pointer to the newly allocated buffer, or NULL if allocation fails.
+ */
+struct qbuff *
+qbuff_new(size_t size);
+
+/**
+ * @brief Delete a buffer and cleanup tasks.
+ *
+ * This function frees a buffer and calls the `cleanup`
+ * callback for each task that has been written but not yet read.
+ * After all cleanup callbacks are executed, the buffer is freed.
+ *
+ * @param qbuff A pointer to the buffer to delete.
+ */
+void
+qbuff_delete(struct qbuff *qbuff);
+
+/**
+ * @brief Write a new task into the buffer.
+ *
+ * This function inserts a new task into the buffer.
+ *
+ * @param qbuff   A pointer to the  buffer.
+ * @param data    The data pointer for the task.
+ * @param func    The main function of the task (executed first).
+ * @param err     The error handler (executed if func returns non-zero).
+ * @param cleanup The cleanup function (always executed last).
+ * @return 0 on success, -1 if the buffer is full or qbuff is NULL.
+ */
+int
+qbuff_write(struct qbuff *qbuff, void *data,
+		int (*func)(void *data),
+		void (*err)(void *data, int errorcode),
+		void (*cleanup)(void *data));
+
+
 
 struct threadsafeq
 {
@@ -138,14 +191,15 @@ threadsafeq_new(size_t buff_sz);
 
 struct workerp
 {
-	struct threadsafeq	*q;
-	pthread_cond_t		cond;
-	pthread_mutex_t		lock;
-	_Atomic size_t		nof_worker;
-	_Atomic size_t		idle;
-	_Atomic size_t		started;
-	_Atomic int		done;
-	pthread_t		tid[];
+	struct threadsafeq		*q;
+	_Atomic (struct qbuff*)		b;
+	pthread_cond_t			cond;
+	pthread_mutex_t			lock;
+	_Atomic size_t			nof_worker;
+	_Atomic size_t			idle;
+	_Atomic size_t			started;
+	_Atomic int			done;
+	pthread_t			tid[];
 };
 
 /**
@@ -278,6 +332,17 @@ workerp_nof_workers(struct workerp *pool);
  */
 size_t
 workerp_nof_idle_workers(struct workerp *pool);
+
+/**
+ * Execute all tasks from the queue buffer in the worker pool.
+ * Blocks until all tasks in the buffer are consumed.
+ *
+ * @param pool Worker pool context (execution environment).
+ * @param buff Queue buffer holding tasks.
+ * @return 0 if all tasks executed, -1 if pool busy.
+ */
+int
+workerp_exec(struct workerp *pool, struct qbuff *buff);
 
 #ifdef __cplusplus
 }
