@@ -7,11 +7,13 @@ on:
     branches: [ "**" ]
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         type: [normal, thread, address]
+    outputs:
+      matrix_type: ${{ matrix.type }}
     steps:
       - uses: actions/checkout@v4
 
@@ -20,19 +22,40 @@ jobs:
           make fclean
           if [ "${{ matrix.type }}" = "normal" ]; then
             sudo make test
-            tar -cJf test.tar.xz test
           elif [ "${{ matrix.type }}" = "thread" ]; then
             sudo make debug_test
-            tar -cJf test_thread.tar.xz test
           elif [ "${{ matrix.type }}" = "address" ]; then
             sudo _ADDRESS=1 make debug_test
-            tar -cJf test_address.tar.xz test
           fi
 
-      - name: Upload ${{ matrix.type }} logs
+      - name: Upload raw test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-test-${{ matrix.type }}
+          path: test/
+
+  compress:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        type: [normal, thread, address]
+    steps:
+      - name: Download test folder
+        uses: actions/download-artifact@v4
+        with:
+          name: raw-test-${{ matrix.type }}
+          path: test/
+
+      - name: Compress test output
+        run: |
+          tar -cJf test_${{ matrix.type }}.tar.xz test/
+
+      - name: Upload compressed logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ matrix.type }}
-          path: test*.tar.xz
+          path: test_${{ matrix.type }}.tar.xz
 
