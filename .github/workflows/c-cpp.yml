@@ -34,28 +34,3 @@ jobs:
         with:
           name: raw-test-${{ matrix.type }}
           path: test/
-
-  compress:
-    needs: build
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        type: [normal, thread, address]
-    steps:
-      - name: Download test folder
-        uses: actions/download-artifact@v4
-        with:
-          name: raw-test-${{ matrix.type }}
-          path: test/
-
-      - name: Compress test output
-        run: |
-          tar -cJf test_${{ matrix.type }}.tar.xz test/
-
-      - name: Upload compressed logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-${{ matrix.type }}
-          path: test_${{ matrix.type }}.tar.xz
-
