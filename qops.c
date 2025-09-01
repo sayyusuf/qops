@@ -12,6 +12,23 @@ extern "C" {
 #define THREADSAFEQ_LOCK(q)	pthread_mutex_lock(&q->lock)
 #define THREADSAFEQ_UNLOCK(q)	pthread_mutex_unlock(&q->lock)
 
+int
+qnode_exec(struct qnode *node)
+{
+	int	ret;
+
+	ret = 0;
+	if (node->func)
+	{
+		ret = node->func(node->data);
+		if (node->err && ret)
+			node->err(node->data, ret);
+	}
+	if (node->cleanup)
+		node->cleanup(node->data);
+	return (ret);
+}
+
 static struct qnode_buff *
 qnode_buff_new(size_t size)
 {
@@ -45,15 +62,20 @@ qnode_buff_delete(struct qnode_buff *qbuff)
 }
 
 struct qbuff *
-qbuff_new(size_t size)
+qbuff_new(size_t size, int (*func)(void *data), void (*err)(void *data, int errorcode), void (*cleanup)(void *data))
 {
 	struct qbuff	*qbuff;
 
+	if (!func)
+		return (NULL);
 	if (!size)
 		size = QNODE_BUFF_DEFSIZE;
-	qbuff = malloc(sizeof (*qbuff) + (sizeof (struct qnode) * size));
+	qbuff = malloc(sizeof (*qbuff) + (sizeof (void *) * size));
 	if (!qbuff)
 		return (NULL);
+	qbuff->func = func;
+	qbuff->err = err;
+	qbuff->cleanup = cleanup;
 	qbuff->sz = size;
 	qbuff->ri = 0;
 	qbuff->wi = 0;
@@ -61,47 +83,54 @@ qbuff_new(size_t size)
 }
 
 void
-qbuff_delete(struct qbuff *qbuff)
+qbuff_clear(struct qbuff *qbuff)
 {
-	struct qnode	*node;
+	void	*data;
 	if (!qbuff)
 		return ;
 	while (qbuff->ri < qbuff->wi)
 	{
-		node = qbuff->nodev + qbuff->ri++;
-		if (node->cleanup)
-			node->cleanup(node->data);
+		data = qbuff->datav + qbuff->ri++;
+		if (qbuff->cleanup)
+			qbuff->cleanup(data);
 	}
+	qbuff->wi = 0;
+	qbuff->ri = 0;
+}
+
+void
+qbuff_delete(struct qbuff *qbuff)
+{
+	if (!qbuff)
+		return ;
+	qbuff_clear(qbuff);
 	free(qbuff);
 }
 
-
 int
-qbuff_write(struct qbuff *qbuff, void *data, int (*func)(void *), void (*err)(void *, int), void (*cleanup)(void *))
+qbuff_exec(struct qbuff *qbuff, size_t idx)
+{
+	int	ret;
+	void	*data;
+
+	data = qbuff->datav[idx];
+	ret = qbuff->func(data);
+	if (qbuff->err && ret)
+		qbuff->err(data, ret);
+	if (qbuff->cleanup)
+		qbuff->cleanup(data);
+	return (ret);
+}
+int
+qbuff_write(struct qbuff *qbuff, void *data)
 {
 	if (!qbuff || qbuff->wi >= qbuff->sz)
 		return (-1);
-	qbuff->nodev[qbuff->wi++] = (struct qnode){.data = data, .func = func, .err = err, .cleanup = cleanup};
+	qbuff->datav[qbuff->wi++] = data;
 	return (0);
 }
 
 
-int
-qnode_exec(struct qnode *node)
-{
-	int	ret;
-
-	ret = 0;
-	if (node->func)
-	{
-		ret = node->func(node->data);
-		if (node->err && ret)
-			node->err(node->data, ret);
-	}
-	if (node->cleanup)
-		node->cleanup(node->data);
-	return (ret);
-}
 
 static void
 threadsafeq_disconnect(struct threadsafeq *q)
@@ -354,8 +383,8 @@ static void *
 workerp_loop_exec(void *data)
 {
 	struct workerp	*pool;
-	struct qbuff	*buff;
 	size_t		idx;
+	struct qbuff	*buff;
 
 	pool = data;
 	workerp_local_index = atomic_fetch_add(&pool->started, 1);
@@ -363,16 +392,14 @@ workerp_loop_exec(void *data)
 	workerp_wait(pool);
 	while (!atomic_load(&pool->done))
 	{
-		buff = atomic_load(&pool->b);
-		if (buff) while (1)
+		buff = pool->b;
+		idx = workerp_local_index;
+		if (buff) while (idx < buff->wi)
 		{
-			idx = atomic_fetch_add(&buff->ri, 1);
-			if (idx >= buff->wi)
-				break ;
-			qnode_exec(&buff->nodev[idx]);
+			qbuff_exec(buff, idx);
+			idx += pool->nof_worker;
 		}
 		workerp_wait(pool);
-
 	}
 	pthread_cleanup_pop(1);
 	return (NULL);
@@ -447,13 +474,13 @@ workerp_exec(struct workerp *pool, struct qbuff *buff)
 {
 	if (!pool || pool->q || !buff || !workerp_is_idle(pool, 0))
 		return (-1);
-	atomic_store(&pool->b,  buff);
+	pool->b = buff;
 	workerp_on_broadcast(pool);
 	while (workerp_nof_workers(pool) == workerp_nof_idle_workers(pool))
 		;
 	while (!workerp_is_idle(pool, 100))
 		;
-	atomic_store(&pool->b,  NULL);
+	buff->ri = buff->wi;
 	return (0);
 }
 

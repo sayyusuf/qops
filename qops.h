@@ -50,9 +50,12 @@ struct qnode_buff
 struct qbuff
 {
 	size_t		sz;
-	_Atomic size_t	ri;
-	_Atomic size_t	wi;
-	struct qnode	nodev[];
+	size_t		ri;
+	size_t		wi;
+	int		(*func)(void *data);
+	void		(*err)(void *data, int errorcode);
+	void		(*cleanup)(void *data);
+	void		*datav[];
 };
 
 /**
@@ -61,11 +64,28 @@ struct qbuff
  * This function allocates a new buffer.
  * If `size` is zero, a default size (`QNODE_BUFF_DEFSIZE`) will be used.
  *
- * @param size The maximum number of nodes the buffer can contain. If 0, the default size is used.
+ * @param size The maximum number of nodes the b
+ * @param func    The main function of the task (executed first).
+ * @param err     The error handler (executed if func returns non-zero).
+ * @param cleanup The cleanup function (always executed last).uffer can contain. If 0, the default size is used.
  * @return A pointer to the newly allocated buffer, or NULL if allocation fails.
  */
 struct qbuff *
-qbuff_new(size_t size);
+qbuff_new(size_t size,
+		int (*func)(void *data),
+		void (*err)(void *data, int errorcode),
+		void (*cleanup)(void *data));
+
+/**
+ * @brief Clear a buffer and cleanup tasks.
+ *
+ * This function calls the `cleanup`
+ * callback for each task that has been written but not yet read.
+ *
+ * @param qbuff A pointer to the buffer to clear.
+ */
+void
+qbuff_clear(struct qbuff *qbuff);
 
 /**
  * @brief Delete a buffer and cleanup tasks.
@@ -86,16 +106,10 @@ qbuff_delete(struct qbuff *qbuff);
  *
  * @param qbuff   A pointer to the  buffer.
  * @param data    The data pointer for the task.
- * @param func    The main function of the task (executed first).
- * @param err     The error handler (executed if func returns non-zero).
- * @param cleanup The cleanup function (always executed last).
  * @return 0 on success, -1 if the buffer is full or qbuff is NULL.
  */
 int
-qbuff_write(struct qbuff *qbuff, void *data,
-		int (*func)(void *data),
-		void (*err)(void *data, int errorcode),
-		void (*cleanup)(void *data));
+qbuff_write(struct qbuff *qbuff, void *data);
 
 
 
@@ -192,7 +206,7 @@ threadsafeq_new(size_t buff_sz);
 struct workerp
 {
 	struct threadsafeq		*q;
-	_Atomic (struct qbuff*)		b;
+	struct qbuff			*b;
 	pthread_cond_t			cond;
 	pthread_mutex_t			lock;
 	_Atomic size_t			nof_worker;

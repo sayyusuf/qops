@@ -49,11 +49,11 @@ main()
 	size_t			i;
 
 	p = workerp_new(NULL, WSZ);
-	b = qbuff_new(LOOP);
+	b = qbuff_new(LOOP, func, error, cleanup);
 	i = 0;
 	while (i < LOOP)
 	{
-		qbuff_write(b, DATA, func, error, cleanup);
+		qbuff_write(b, DATA);
 		i++;
 	}
 	workerp_exec(p, b);
