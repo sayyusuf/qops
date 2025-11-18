@@ -7,7 +7,7 @@ extern "C" {
 #include <stdlib.h>
 #include <stddef.h>
 #include <stdatomic.h>
-#include <qops.h>
+#include "qops.h"
 
 #define THREADSAFEQ_LOCK(q)	pthread_mutex_lock(&q->lock)
 #define THREADSAFEQ_UNLOCK(q)	pthread_mutex_unlock(&q->lock)
