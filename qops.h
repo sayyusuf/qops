@@ -8,6 +8,7 @@ extern "C" {
 #include <stddef.h>
 #include <pthread.h>
 #include <sched.h>
+#include <stdbool.h>
 
 #define QOPS_MAX_WORKER		0xffff
 #define QNODE_BUFF_DEFSIZE	64
@@ -112,19 +113,7 @@ int
 qbuff_write(struct qbuff *qbuff, void *data);
 
 
-
-struct threadsafeq
-{
-	pthread_mutex_t		lock;
-	struct qnode_buff	*head;
-	struct qnode_buff	*tail;
-	void	(*on_append)(void *);
-	void	(*on_broadcast)(void *);
-	void			*signal_data;
-	_Atomic size_t		n;
-	size_t			buff_sz;
-};
-
+struct threadsafeq;
 /**
  * @brief Appends a node to the thread-safe queue and signals workers.
  *
@@ -203,18 +192,7 @@ threadsafeq_delete(struct threadsafeq *q);
 struct threadsafeq *
 threadsafeq_new(size_t buff_sz);
 
-struct workerp
-{
-	struct threadsafeq		*q;
-	struct qbuff			*b;
-	pthread_cond_t			cond;
-	pthread_mutex_t			lock;
-	_Atomic size_t			nof_worker;
-	_Atomic size_t			idle;
-	_Atomic size_t			started;
-	_Atomic int			done;
-	pthread_t			tid[];
-};
+struct workerp;
 
 /**
  * @brief Checks if the worker pool is idle.
@@ -225,7 +203,7 @@ struct workerp
  * @param timeout_ms The timeout in milliseconds.
  * @return 1 if the pool is idle, 0 otherwise.
  */
-_Bool
+bool
 workerp_is_idle(struct workerp *pool, size_t timeout_ms);
 
 /**

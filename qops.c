@@ -132,6 +132,19 @@ qbuff_write(struct qbuff *qbuff, void *data)
 
 
 
+
+struct threadsafeq
+{
+	pthread_mutex_t		lock;
+	struct qnode_buff	*head;
+	struct qnode_buff	*tail;
+	void	(*on_append)(void *);
+	void	(*on_broadcast)(void *);
+	void			*signal_data;
+	_Atomic size_t		n;
+	size_t			buff_sz;
+};
+
 static void
 threadsafeq_disconnect(struct threadsafeq *q)
 {
@@ -308,6 +321,20 @@ alloc_err:
 
 _Thread_local static int workerp_local_index = -1;
 
+
+struct workerp
+{
+	struct threadsafeq		*q;
+	struct qbuff			*b;
+	pthread_cond_t			cond;
+	pthread_mutex_t			lock;
+	_Atomic size_t			nof_worker;
+	_Atomic size_t			idle;
+	_Atomic size_t			started;
+	_Atomic int			done;
+	pthread_t			tid[];
+};
+
 static void
 workerp_on_finish(void *data)
 {
@@ -423,7 +450,7 @@ workerp_finish_request(struct workerp *pool, size_t timeout_ms)
 	return (-1);
 }
 
-_Bool
+bool
 workerp_is_idle(struct workerp *pool, size_t timeout_ms)
 {
 	_Bool	f;
