@@ -1,5 +1,5 @@
-#ifndef QOPS_H
-#define QOPS_H
+#ifndef qops_H
+#define qops_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -8,20 +8,23 @@ extern "C" {
 #include <stddef.h>
 #include <pthread.h>
 #include <sched.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 
 #define QOPS_MAX_WORKER		0xffff
-#define QNODE_BUFF_DEFSIZE	64
-#define WORKERP_MAX_PRIORITY	99
+#define QOPS_MAX_PRIORITY	99
+#define QOPS_NODE_BUFF_DEFSIZE	64
 
-#define WORKERP_SCHED_OTHER	SCHED_OTHER
-#define WORKERP_SCHED_RR	SCHED_RR
-#define WORKERP_SCHED_FIFO	SCHED_FIFO
+#define QOPS_SCHED_OTHER	SCHED_OTHER
+#define QOPS_SCHED_RR		SCHED_RR
+#define QOPS_SCHED_FIFO		SCHED_FIFO
+#define QOPS_LINKED_BUFF	0
+#define QOPS_STATIC_BUFF	1
+#define QOPS_RING_BUFF		2
 
-struct qnode
+struct qops_node
 {
-	struct qnode	*next;			/* next node */
-	void		*data;			/* Data specific to the task */
+	void	*data;				/* Data specific to the task */
 	int	(*func)(void *data);		/* Task function. First call */
 	void	(*err)(void *data, int errcode);/* Error handling callback. Second call if first call returns non-zero. The return value of func is passed as errcode. */
 	void	(*cleanup)(void *data);		/* Cleanup callback. Third call */
@@ -30,181 +33,111 @@ struct qnode
 /**
  * @brief Executes the task in the node.
  *
- * This function executes the `func` of a `qnode`, handling errors and cleaning up afterwards.
+ * This function executes the `func` of a `qops_node`, handling errors and cleaning up afterwards.
  *
- * @param node A pointer to the `qnode` to execute.
+ * @param node A pointer to the `qops_node` to execute.
  * @return The result of executing the function (0 for success, non-zero for failure).
  */
 int
-qnode_exec(struct qnode *node);
+qops_node_exec(struct qops_node *node);
 
-struct qnode_buff
-{
-	size_t			sz;
-	size_t			ri;
-	size_t			wi;
-	struct qnode_buff	*next;
-	struct qnode		nodev[];
-};
-
-
-struct qbuff
-{
-	size_t		sz;
-	size_t		ri;
-	size_t		wi;
-	int		(*func)(void *data);
-	void		(*err)(void *data, int errorcode);
-	void		(*cleanup)(void *data);
-	void		*datav[];
-};
+struct qops_buff;
 
 /**
- * @brief Allocate a new buffer.
+ * @brief Write a node to the thread-safe buffer and signal workers.
  *
- * This function allocates a new buffer.
- * If `size` is zero, a default size (`QNODE_BUFF_DEFSIZE`) will be used.
+ * Adds a node to the buffer and signals workers to start processing.
  *
- * @param size The maximum number of nodes the b
- * @param func    The main function of the task (executed first).
- * @param err     The error handler (executed if func returns non-zero).
- * @param cleanup The cleanup function (always executed last).uffer can contain. If 0, the default size is used.
- * @return A pointer to the newly allocated buffer, or NULL if allocation fails.
- */
-struct qbuff *
-qbuff_new(size_t size,
-		int (*func)(void *data),
-		void (*err)(void *data, int errorcode),
-		void (*cleanup)(void *data));
-
-/**
- * @brief Clear a buffer and cleanup tasks.
- *
- * This function calls the `cleanup`
- * callback for each task that has been written but not yet read.
- *
- * @param qbuff A pointer to the buffer to clear.
- */
-void
-qbuff_clear(struct qbuff *qbuff);
-
-/**
- * @brief Delete a buffer and cleanup tasks.
- *
- * This function frees a buffer and calls the `cleanup`
- * callback for each task that has been written but not yet read.
- * After all cleanup callbacks are executed, the buffer is freed.
- *
- * @param qbuff A pointer to the buffer to delete.
- */
-void
-qbuff_delete(struct qbuff *qbuff);
-
-/**
- * @brief Write a new task into the buffer.
- *
- * This function inserts a new task into the buffer.
- *
- * @param qbuff   A pointer to the  buffer.
- * @param data    The data pointer for the task.
- * @return 0 on success, -1 if the buffer is full or qbuff is NULL.
- */
-int
-qbuff_write(struct qbuff *qbuff, void *data);
-
-
-struct threadsafeq;
-/**
- * @brief Appends a node to the thread-safe queue and signals workers.
- *
- * This function adds a node to the queue and signals workers to start processing.
- *
- * @param q A pointer to the `threadsafeq`.
- * @param node A pointer to the `qnode` to add.
+ * @param q Pointer to the `qops_buff`.
+ * @param node Pointer to the `qops_node` to add.
  * @return 0 on success, -1 on failure.
  */
 int
-threadsafeq_append(struct threadsafeq *q, struct qnode *node);
+qops_buff_write(struct qops_buff *q, struct qops_node *node);
 
 /**
- * @brief Appends a node to the thread-safe queue without signaling workers.
+ * @brief Read a node from the thread-safe buffer.
  *
- * This function adds a node to the queue but does not signal workers.
+ * Removes the first node from the buffer and stores it in `node`.
  *
- * @param q A pointer to the `threadsafeq`.
- * @param node A pointer to the `qnode` to add.
- * @return 0 on success, -1 on failure.
+ * @param q Pointer to the `qops_buff`.
+ * @param node Pointer to the `qops_node` where the read node will be stored.
+ * @return 0 on success, -1 if the buffer is empty.
  */
 int
-threadsafeq_append_quiet(struct threadsafeq *q, struct qnode *node);
+qops_buff_read(struct qops_buff *q, struct qops_node *node);
+
 
 /**
- * @brief Broadcasts a signal to all workers in the queue.
+ * @brief Read a node at index from the thread-safe buffer.
  *
- * This function signals all workers to wake up and process tasks.
+ * Reads the node at `idx` from the buffer (non-destructive access) and
+ * stores a pointer to it in `node`.
  *
- * @param q A pointer to the `threadsafeq`.
- */
-void
-threadsafeq_broadcast(struct threadsafeq *q);
-
-/**
- * @brief Removes a node from the thread-safe queue.
- *
- * This function removes the first node in the queue and returns it.
- *
- * @param q A pointer to the `threadsafeq`.
- * @param node A pointer to the `qnode` to store the removed node.
- * @return 0 on success, -1 if the queue is empty.
+ * @param q Pointer to the `qops_buff`.
+ * @param node Pointer to a `qops_node *` that will receive the address of the node.
+ * @param idx Index of the node to read.
+ * @return 0 on success, -1 if the index is out of range or on error.
  */
 int
-threadsafeq_remove(struct threadsafeq *q, struct qnode *node);
+qops_buff_at(struct qops_buff *q, struct qops_node **node, size_t idx);
+
+
 
 /**
- * @brief Returns the size of the thread-safe queue.
+ * @brief Returns the size of the thread-safe buffer.
  *
- * This function returns the number of tasks in the queue.
+ * This function returns the number of tasks in the buffer.
  *
- * @param q A pointer to the `threadsafeq`.
- * @return The size of the queue.
+ * @param q A pointer to the `qops_buff`.
+ * @return The size of the buffer.
  */
 size_t
-threadsafeq_size(struct threadsafeq *q);
+qops_buff_size(struct qops_buff *q);
 
 /**
- * @brief Deletes the thread-safe queue and cleans up all resources.
+ * @brief Delete the thread-safe buffer and release resources.
  *
- * This function frees the memory used by the queue and its buffers.
+ * Frees memory used by the buffer and any internal resources.
  *
- * @param q A pointer to the `threadsafeq` to delete.
+ * @param q Pointer to the `qops_buff` to delete.
  */
 void
-threadsafeq_delete(struct threadsafeq *q);
+qops_buff_delete(struct qops_buff *q);
 
 /**
- * @brief Creates a new thread-safe queue.
+ * @brief Create a new thread-safe buffer.
  *
- * This function initializes a new `threadsafeq` with the specified buffer size.
+ * Initializes a new `qops_buff` with the specified buffer size and
+ * implementation type.
  *
- * @param buff_sz The size of the buffer used for each node.
- * @return A pointer to the newly created queue, or NULL if allocation fails.
+ * @param buff_sz The size of the buffer (number of entries). If 0, a default
+ *                size is used.
+ * @param type   Implementation type: `QOPS_LINKED_BUFF`, `qops_STATIC_BUFF`,
+ *               or `QOPS_RING_BUFF`.
+ * @return Pointer to the newly created buffer, or NULL on allocation failure.
  */
-struct threadsafeq *
-threadsafeq_new(size_t buff_sz);
+struct qops_buff *
+qops_buff_new(size_t buff_sz, int type);
 
-struct workerp;
+
+
+
+
+
+struct qops_pool;
 
 /**
- * @brief Checks if the worker pool is idle.
+ * @brief Check if the worker pool is idle.
  *
- * This function checks if all workers are idle and there are no tasks in the queue.
+ * Returns true when all workers are idle and there are no tasks in the buffer.
  *
  * @param pool A pointer to the worker pool.
  * @param timeout_ms The timeout in milliseconds.
  * @return 1 if the pool is idle, 0 otherwise.
  */
 bool
-workerp_is_idle(struct workerp *pool, size_t timeout_ms);
+qops_pool_is_idle(struct qops_pool *pool, size_t timeout_ms);
 
 /**
  * @brief Deletes the worker pool and cleans up all resources.
@@ -215,7 +148,7 @@ workerp_is_idle(struct workerp *pool, size_t timeout_ms);
  * @return 0 on success, -1 on busy.
  */
 int
-workerp_delete(struct workerp *pool);
+qops_pool_delete(struct qops_pool *pool);
 
 /**
  * @brief Broadcasts a signal to all workers in the pool.
@@ -225,63 +158,63 @@ workerp_delete(struct workerp *pool);
  * @param pool A pointer to the worker pool.
  */
 void
-workerp_broadcast(struct workerp *pool);
+qops_pool_broadcast(struct qops_pool *pool);
 
 /**
- * @brief Appends a task to the worker pool's queue.
+ * @brief Write a task to the worker pool's buffer.
  *
- * This function adds a task to the queue of the worker pool.
+ * Adds a task to the pool's buffer and signals workers (if applicable).
  *
- * @param pool A pointer to the worker pool.
- * @param node A pointer to the `qnode` representing the task.
+ * @param pool Pointer to the worker pool.
+ * @param node Pointer to the `qops_node` representing the task.
  * @return 0 on success, -1 on failure.
  */
 int
-workerp_append(struct workerp *pool, struct qnode *node);
+qops_pool_write(struct qops_pool *pool, struct qops_node *node);
 
 /**
- * @brief Appends a task to the worker pool's queue without signaling workers.
+ * @brief Write a task to the worker pool's buffer without signaling workers.
  *
- * This function adds a task to the queue but does not wake up workers.
+ * Adds a task to the buffer but does not wake up workers.
  *
- * @param pool A pointer to the worker pool.
- * @param node A pointer to the `qnode` representing the task.
+ * @param pool Pointer to the worker pool.
+ * @param node Pointer to the `qops_node` representing the task.
  * @return 0 on success, -1 on failure.
  */
 int
-workerp_append_quiet(struct workerp *pool, struct qnode *node);
+qops_pool_write_quiet(struct qops_pool *pool, struct qops_node *node);
 
 /**
  * @brief Creates a new worker pool.
  *
  * This function creates a new worker pool, initializes threads, and prepares the pool for processing tasks.
  *
- * @param q A pointer to the `threadsafeq` for task distribution.
+ * @param q A pointer to the `qops_buff` for task distribution.
  * @param n The number of worker threads to create.
  * @return A pointer to the newly created worker pool, or NULL if allocation fails.
  */
-struct workerp *
-workerp_new(struct threadsafeq *q, size_t n);
+struct qops_pool *
+qops_pool_new(struct qops_buff *q, size_t n);
 
 /**
  * @brief Creates a new worker pool with custom scheduling parameters.
  *
- * This function creates a new worker pool similar to workerp_new(), but allows specifying
+ * This function creates a new worker pool similar to qops_pool_new(), but allows specifying
  * a custom thread scheduling policy and priority for each worker.
  *
  * Supported scheduling policies:
- * - WORKERP_SCHED_OTHER (default time-sharing policy)
- * - WORKERP_SCHED_RR (real-time round-robin)
- * - WORKERP_SCHED_FIFO (real-time first-in-first-out)
+ * - QOPS_SCHED_OTHER (default time-sharing policy)
+ * - QOPS_SCHED_RR (real-time round-robin)
+ * - QOPS_SCHED_FIFO (real-time first-in-first-out)
  *
- * @param q A pointer to the `threadsafeq` for task distribution.
+ * @param q A pointer to the `qops_buff` for task distribution.
  * @param n The number of worker threads to create.
- * @param sched The scheduling policy to use for worker threads. Use one of the WORKERP_SCHED_* macros.
+ * @param sched The scheduling policy to use for worker threads. Use one of the QOPS_SCHED_* macros.
  * @param priority The thread priority (used with real-time policies such as RR or FIFO). Ignored for SCHED_OTHER.
  * @return A pointer to the newly created worker pool, or NULL if allocation or thread setup fails.
  */
-struct workerp *
-workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority);
+struct qops_pool *
+qops_pool_new_sched(struct qops_buff *q, size_t n, int sched, int priority);
 
 /**
  * @brief Gets the index of the currently executing worker thread.
@@ -292,7 +225,7 @@ workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority);
  * @return The index of the current worker thread, or -1 if called from a non-worker thread.
  */
 int
-workerp_get_local_index(void);
+qops_pool_get_local_index(void);
 
 /**
  * @brief Get the total number of worker threads in the pool.
@@ -307,13 +240,13 @@ workerp_get_local_index(void);
  * @return Total number of worker threads. Returns 0 if @p pool is NULL.
  */
 size_t
-workerp_nof_workers(struct workerp *pool);
+qops_pool_nof_workers(struct qops_pool *pool);
 
 /**
  * @brief Get the current number of idle worker threads in the pool.
  *
  * Returns the number of workers that are currently idle (i.e., waiting on the
- * pool's condition variable because the queue is empty). The value is read from
+ * pool's condition variable because the buffer is empty). The value is read from
  * an atomic counter and represents a moment-in-time snapshot; it may change
  * immediately under contention.
  *
@@ -323,18 +256,20 @@ workerp_nof_workers(struct workerp *pool);
  * @return Number of idle workers. Returns 0 if @p pool is NULL.
  */
 size_t
-workerp_nof_idle_workers(struct workerp *pool);
+qops_pool_nof_idle_workers(struct qops_pool *pool);
 
 /**
- * Execute all tasks from the queue buffer in the worker pool.
- * Blocks until all tasks in the buffer are consumed.
+ * @brief Execute all tasks from the buffer in the worker pool.
  *
- * @param pool Worker pool context (execution environment).
- * @param buff Queue buffer holding tasks.
- * @return 0 if all tasks executed, -1 if pool busy.
+ * Blocks until all tasks in the provided buffer are consumed by workers.
+ *
+ * @param pool Worker pool context.
+ * @param buff Buffer holding tasks to be executed.
+ * @return 0 if all tasks executed, -1 if the pool is busy or on error.
  */
 int
-workerp_exec(struct workerp *pool, struct qbuff *buff);
+qops_pool_exec(struct qops_pool *pool, struct qops_buff *buff);
+
 
 #ifdef __cplusplus
 }

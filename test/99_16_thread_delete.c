@@ -70,24 +70,24 @@ ft_strdup(const char *s)
 int
 main()
 {
-	struct threadsafeq	*q;
-	struct workerp		*p;
+	struct qops_buff	*q;
+	struct qops_pool	*p;
 	size_t			i;
 
-	q = threadsafeq_new(BSZ);
-	p = workerp_new(q, WSZ);
+	q = qops_buff_new(BSZ, QOPS_LINKED_BUFF);
+	p = qops_pool_new(q, WSZ);
 	i = 0;
 	while (i < LOOP)
 	{
 		char *str = ft_strdup(DATA);
-		struct qnode node = (struct qnode){.func = func, .cleanup = cleanup, .err = error, .data = str};
-		workerp_append_quiet(p, &node);
+		struct qops_node node = (struct qops_node){.func = func, .cleanup = cleanup, .err = error, .data = str};
+		qops_pool_write_quiet(p, &node);
 		i++;
 	}
-	workerp_broadcast(p);
-	while (workerp_delete(p))
+	qops_pool_broadcast(p);
+	while (qops_pool_delete(p))
 		;
-	int ret = !threadsafeq_size(q);
-	threadsafeq_delete(q);
+	int ret = !qops_buff_size(q);
+	qops_buff_delete(q);
 	return (ret);
 }

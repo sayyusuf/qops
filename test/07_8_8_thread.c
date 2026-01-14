@@ -64,14 +64,14 @@ ft_strdup(const char *s)
 int
 func2(void *data)
 {
-	struct workerp		*p;
+	struct qops_pool	*p;
 
-	p = (struct workerp *)data;
+	p = (struct qops_pool *)data;
 	while (atomic_fetch_add(&cnt, 1) < LOOP)
 	{
 		char *s = ft_strdup(DATA);
-		struct qnode node = (struct qnode){.func = func, .cleanup = cleanup, .err = error, .data = s};
-		workerp_append(p, &node);
+		struct qops_node node = (struct qops_node){.func = func, .cleanup = cleanup, .err = error, .data = s};
+		qops_pool_write(p, &node);
 	}
 	return (0);
 }
@@ -79,29 +79,29 @@ func2(void *data)
 int
 main()
 {
-	struct threadsafeq	*q;
-	struct workerp		*p;
-	struct threadsafeq	*q2;
-	struct workerp		*p2;
+	struct qops_buff	*q;
+	struct qops_pool	*p;
+	struct qops_buff	*q2;
+	struct qops_pool	*p2;
 	size_t			i;
 
-	q = threadsafeq_new(BSZ);
-	p = workerp_new(q, WSZ);
-	q2 = threadsafeq_new(BSZ);
-	p2 = workerp_new(q2, WSZ);
+	q = qops_buff_new(BSZ, QOPS_LINKED_BUFF);
+	p = qops_pool_new(q, WSZ);
+	q2 = qops_buff_new(BSZ, QOPS_LINKED_BUFF);
+	p2 = qops_pool_new(q2, WSZ);
 	i = 0;
 	while (i < WSZ)
 	{
-		struct qnode node = (struct qnode){.func = func2, .cleanup = NULL, .err = NULL, .data = p};
-		workerp_append(p2, &node);
+		struct qops_node node = (struct qops_node){.func = func2, .cleanup = NULL, .err = NULL, .data = p};
+		qops_pool_write(p2, &node);
 		i++;
 	}
-	while (!workerp_is_idle(p, 100) || !workerp_is_idle(p2, 100))
+	while (!qops_pool_is_idle(p2, 100) || !qops_pool_is_idle(p, 100))
 		;
-	workerp_delete(p);
-	threadsafeq_delete(q);
-	workerp_delete(p2);
-	threadsafeq_delete(q2);
+	qops_pool_delete(p);
+	qops_buff_delete(q);
+	qops_pool_delete(p2);
+	qops_buff_delete(q2);
 	if (atomic_load(&inc) != LOOP || atomic_load(&erc))
 	{
 		fprintf(stderr, "Error: LOOP = %d, inc = %d, erc = %d\n", LOOP, atomic_load(&inc), atomic_load(&erc));

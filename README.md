@@ -1,28 +1,28 @@
-# Threadsafe Queue and Thread Pool
+# Threadsafe buffer and Thread Pool
 
-This project provides a thread-safe queue implementation along with a worker pool system to process tasks concurrently. It uses POSIX threads (`pthread`) and is designed to be simple yet effective for multi-threaded task execution.
+This project provides a thread-safe buffer implementation along with a worker pool system to process tasks concurrently. It uses POSIX threads (`pthread`) and is designed to be simple yet effective for multi-threaded task execution.
 
 ## Overview
 
-- **Threadsafe Queue**: A queue that supports thread-safe operations for appending and removing tasks.
-- **Worker Pool**: A pool of worker threads that process tasks from the queue.
+- **Threadsafe buffer**: A buffer that supports thread-safe operations for writeing and removing tasks.
+- **Worker Pool**: A pool of worker threads that process tasks from the buffer.
 
 ## Features
 
-- Queue operations like append and remove are thread-safe.
+- buffer operations like write and read are thread-safe.
 - Workers in the pool execute tasks concurrently.
-- Callback functions for appending tasks and broadcasting signals.
-- Graceful shutdown of workers and queues.
+- Callback functions for writeing tasks and broadcasting signals.
+- Graceful shutdown of workers and buffers.
 
 ## Components
 
-### 1. `Threadsafe Queue`
+### 1. `Threadsafe buffer`
 
-This queue supports the following operations:
+This buffer supports the following operations:
 
-- **Append**: Add a node to the queue.
-- **Remove**: Remove a node from the queue.
-- **Size**: Get the number of tasks in the queue.
+- **write**: Add a node to the buffer.
+- **read**: read a node from the buffer.
+- **Size**: Get the number of tasks in the buffer.
 - **Broadcast**: Notify all workers.
 - **Delete**: Clean up resources and free memory.
 
@@ -30,7 +30,7 @@ This queue supports the following operations:
 
 This component handles the worker threads that will process tasks concurrently. The worker pool supports:
 
-- **Append tasks**: Add tasks to the pool for processing.
+- **write tasks**: Add tasks to the pool for processing.
 - **Broadcast**: Broadcast a signal to wake all idle workers.
 - **Graceful Shutdown**: Request workers to finish their tasks and clean up resources.
 
@@ -38,9 +38,9 @@ This component handles the worker threads that will process tasks concurrently. 
 
 ## Usage Example
 
-### 1. **Creating a Thread-safe Queue and Worker Pool**
+### 1. **Creating a Thread-safe buffer and Worker Pool**
 
-First, create a thread-safe queue to hold your tasks:
+First, create a thread-safe buffer to hold your tasks:
 
 ```c
 #include <qops.h>
@@ -66,24 +66,20 @@ void error(void *data, int errno)
 int main()
 {
 	size_t buff_sz = 10; // Number of nodes per buffer
-	struct threadsafeq *queue = threadsafeq_new(buff_sz);
-	if (!queue)
+	struct qops_buff *buffer = qops_buff_new(buff_sz);
+	if (!buffer)
 		return 1; // EXIT_FAILURE
 	size_t worker_sz = 10; // Number of worker thread
-	struct workerp *pool = workerp_new(queue, worker_sz);
+	struct qops_ *pool = qops_new(buffer, worker_sz);
 	if (!pool)
 		return 1; // EXIT_FAILURE
-	struct qnode node1 = (struct qnode){.data = "hello", .func = func, .cleanup = cleanup, .err = error};
-	struct qnode node2 = (struct qnode){.data = "world", .func = func, .cleanup = cleanup, .err = error};
-	// There are two methods to append
-	// 1. Using pool
-	workerp_append(pool, &node1);
-	// 2. Using queue
-	threadsafeq_append(queue, &node2);
-	while (!workerp_is_idle(pool, 100)) // Wait 100 ms to finish all tasks in the loop
+	struct qops_node node1 = (struct qops_node){.data = "hello", .func = func, .cleanup = cleanup, .err = error};
+	struct qops_node node2 = (struct qops_node){.data = "world", .func = func, .cleanup = cleanup, .err = error};
+	qops_pool_write(pool, &node1);
+	while (!qops_is_idle(pool, 100)) // Wait 100 ms to finish all tasks in the loop
 		;
-	workerp_delete(pool);
-	threadsafeq_delete(queue);
+	qops_delete(pool);
+	qops_buff_delete(buffer);
 	return 0; // EXIT_SUCCESS
 }
 ```

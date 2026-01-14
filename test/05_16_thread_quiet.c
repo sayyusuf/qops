@@ -44,24 +44,24 @@ cleanup(void *data)
 int
 main()
 {
-	struct threadsafeq	*q;
-	struct workerp		*p;
+	struct qops_buff	*q;
+	struct qops_pool	*p;
 	size_t			i;
 
-	q = threadsafeq_new(BSZ);
-	p = workerp_new(q, WSZ);
+	q = qops_buff_new(BSZ, QOPS_LINKED_BUFF);
+	p = qops_pool_new(q, WSZ);
 	i = 0;
 	while (i < LOOP)
 	{
-		struct qnode node = (struct qnode){.func = func, .cleanup = cleanup, .err = error, .data = DATA};
-		workerp_append_quiet(p, &node);
+		struct qops_node node = (struct qops_node){.func = func, .cleanup = cleanup, .err = error, .data = DATA};
+		qops_pool_write_quiet(p, &node);
 		i++;
 	}
-	workerp_broadcast(p);
-	while (!workerp_is_idle(p, 100))
+	qops_pool_broadcast(p);
+	while (!qops_pool_is_idle(p, 100))
 		;
-	workerp_delete(p);
-	threadsafeq_delete(q);
+	qops_pool_delete(p);
+	qops_buff_delete(q);
 	if (atomic_load(&inc) != LOOP || atomic_load(&erc))
 	{
 		fprintf(stderr, "Error: LOOP = %d, inc = %d, erc = %d\n", LOOP, atomic_load(&inc), atomic_load(&erc));

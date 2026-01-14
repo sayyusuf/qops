@@ -70,8 +70,8 @@ ft_strdup(const char *s)
 int
 main()
 {
-	struct threadsafeq	*q;
-	struct workerp		*p;
+	struct qops_buff	*q;
+	struct qops_pool	*p;
 	size_t			i;
 
 	if (getuid())
@@ -79,20 +79,20 @@ main()
 		fprintf(stderr, "Run as root\n");
 		return (2);
 	}
-	q = threadsafeq_new(BSZ);
-	p = workerp_new_sched(q, WSZ, WORKERP_SCHED_RR, 99);
+	q = qops_buff_new(BSZ, QOPS_LINKED_BUFF);
+	p = qops_pool_new_sched(q, WSZ, QOPS_SCHED_RR, 99);
 	i = 0;
 	while (i < LOOP)
 	{
 		char *str = ft_strdup(DATA);
-		struct qnode node = (struct qnode){.func = func, .cleanup = cleanup, .err = error, .data = str};
-		workerp_append(p, &node);
+		struct qops_node node = (struct qops_node){.func = func, .cleanup = cleanup, .err = error, .data = str};
+		qops_pool_write(p, &node);
 		i++;
 	}
-	while (!workerp_is_idle(p, 100))
+	while (!qops_pool_is_idle(p, 100))
 		;
-	workerp_delete(p);
-	threadsafeq_delete(q);
+	qops_pool_delete(p);
+	qops_buff_delete(q);
 	if (atomic_load(&inc) != LOOP || atomic_load(&erc))
 	{
 		fprintf(stderr, "Error: LOOP = %d, inc = %d, erc = %d\n", LOOP, atomic_load(&inc), atomic_load(&erc));

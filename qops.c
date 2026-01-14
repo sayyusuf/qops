@@ -12,8 +12,21 @@ extern "C" {
 #define THREADSAFEQ_LOCK(q)	pthread_mutex_lock(&q->lock)
 #define THREADSAFEQ_UNLOCK(q)	pthread_mutex_unlock(&q->lock)
 
+
+
+#define QOPS_PROTO_NAME_BUFF_READ(name)		int name(struct qops_buff *buff, struct qops_node *node)		
+#define QOPS_PROTO_NAME_BUFF_AT(name)		int name(struct qops_buff *buff, struct qops_node **node, size_t idx)		
+#define QOPS_PROTO_NAME_BUFF_WRITE(name)	int name(struct qops_buff *buff, struct qops_node *node)
+#define QOPS_PROTO_NAME_BUFF_DELETE(name)	void name(struct qops_buff *buff)
+
+#define QOPS_PROTO_BUFF_READ(name)		QOPS_PROTO_NAME_BUFF_READ(name##_read)	
+#define QOPS_PROTO_BUFF_AT(name)		QOPS_PROTO_NAME_BUFF_AT(name##_at)
+#define QOPS_PROTO_BUFF_WRITE(name)		QOPS_PROTO_NAME_BUFF_WRITE(name##_write)
+#define QOPS_PROTO_BUFF_DELETE(name)		QOPS_PROTO_NAME_BUFF_DELETE(name##_delete)
+#define qops_BUFF_OPS_INIT(name)		{.read = name##_read, .at = name##_at, .write = name##_write, .delete = name##_delete}
+
 int
-qnode_exec(struct qnode *node)
+qops_node_exec(struct qops_node *node)
 {
 	int	ret;
 
@@ -29,320 +42,367 @@ qnode_exec(struct qnode *node)
 	return (ret);
 }
 
-static struct qnode_buff *
-qnode_buff_new(size_t size)
+
+struct qops_node_buff
 {
-	struct qnode_buff	*qbuff;
+	size_t					sz;
+	_Atomic size_t				ri;
+	_Atomic size_t				tri;
+	_Atomic size_t				wi;
+	_Atomic size_t				twi;
+	_Atomic (struct qops_node_buff *)	next;
+	struct qops_node			node_v[];
+};
+
+static struct qops_node_buff *
+qops_node_buff_new(size_t size)
+{
+	struct qops_node_buff	*buff;
 
 	if (!size)
-		size = QNODE_BUFF_DEFSIZE;
-	qbuff = malloc(sizeof (*qbuff) + (sizeof (struct qnode) * size));
-	if (!qbuff)
+		size = QOPS_NODE_BUFF_DEFSIZE;
+	buff = malloc(sizeof (*buff) + (sizeof (struct qops_node) * size));
+	if (!buff)
 		return (NULL);
-	qbuff->sz = size;
-	qbuff->ri = 0;
-	qbuff->wi = 0;
-	qbuff->next = NULL;
-	return (qbuff);
+	buff->sz = size;
+	buff->ri = 0;
+	buff->tri = 0;
+	buff->wi = 0;
+	buff->twi = 0;
+	buff->next = NULL;
+	return (buff);
 }
 
 static void
-qnode_buff_delete(struct qnode_buff *qbuff)
+qops_node_buff_delete(struct qops_node_buff *buff)
 {
-	struct qnode	*node;
-	if (!qbuff)
+	struct qops_node	*node;
+
+	if (!buff)
 		return ;
-	while (qbuff->ri < qbuff->wi)
+	while (buff->ri != buff->wi)
 	{
-		node = qbuff->nodev + qbuff->ri++;
+		if (buff->ri >= buff->sz)
+			buff->ri = buff->ri % buff->sz;
+		node = buff->node_v + buff->ri++;
 		if (node->cleanup)
 			node->cleanup(node->data);
 	}
-	free(qbuff);
+	free(buff);
 }
 
-struct qbuff *
-qbuff_new(size_t size, int (*func)(void *data), void (*err)(void *data, int errorcode), void (*cleanup)(void *data))
-{
-	struct qbuff	*qbuff;
 
-	if (!func)
-		return (NULL);
-	if (!size)
-		size = QNODE_BUFF_DEFSIZE;
-	qbuff = malloc(sizeof (*qbuff) + (sizeof (void *) * size));
-	if (!qbuff)
-		return (NULL);
-	qbuff->func = func;
-	qbuff->err = err;
-	qbuff->cleanup = cleanup;
-	qbuff->sz = size;
-	qbuff->ri = 0;
-	qbuff->wi = 0;
-	return (qbuff);
-}
-
-void
-qbuff_clear(struct qbuff *qbuff)
+struct qops_buff_ops
 {
-	void	*data;
-	if (!qbuff)
-		return ;
-	while (qbuff->ri < qbuff->wi)
-	{
-		data = qbuff->datav + qbuff->ri++;
-		if (qbuff->cleanup)
-			qbuff->cleanup(data);
-	}
-	qbuff->wi = 0;
-	qbuff->ri = 0;
-}
+	QOPS_PROTO_NAME_BUFF_READ((* read));
+	QOPS_PROTO_NAME_BUFF_AT((* at));
+	QOPS_PROTO_NAME_BUFF_WRITE((* write));
+	QOPS_PROTO_NAME_BUFF_DELETE((* delete));
+};
 
-void
-qbuff_delete(struct qbuff *qbuff)
-{
-	if (!qbuff)
-		return ;
-	qbuff_clear(qbuff);
-	free(qbuff);
-}
 
-int
-qbuff_exec(struct qbuff *qbuff, size_t idx)
+struct qops_buff
 {
-	int	ret;
-	void	*data;
+	struct qops_buff_ops			ops;
+	_Atomic (struct qops_node_buff *)	head;
+	_Atomic (struct qops_node_buff *)	tail;
+	_Atomic (struct qops_node_buff *)	delete;
+	_Atomic size_t				n;
+	size_t					buff_sz;
+	pthread_mutex_t				mtx;
+};
 
-	data = qbuff->datav[idx];
-	ret = qbuff->func(data);
-	if (qbuff->err && ret)
-		qbuff->err(data, ret);
-	if (qbuff->cleanup)
-		qbuff->cleanup(data);
-	return (ret);
-}
-int
-qbuff_write(struct qbuff *qbuff, void *data)
+
+static
+QOPS_PROTO_BUFF_READ(qops_ring_buff)
 {
-	if (!qbuff || qbuff->wi >= qbuff->sz)
-		return (-1);
-	qbuff->datav[qbuff->wi++] = data;
+	(void)buff;
+	(void)node;
 	return (0);
 }
 
-
-
-
-struct threadsafeq
+static
+QOPS_PROTO_BUFF_AT(qops_ring_buff)
 {
-	pthread_mutex_t		lock;
-	struct qnode_buff	*head;
-	struct qnode_buff	*tail;
-	void	(*on_append)(void *);
-	void	(*on_broadcast)(void *);
-	void			*signal_data;
-	_Atomic size_t		n;
-	size_t			buff_sz;
-};
-
-static void
-threadsafeq_disconnect(struct threadsafeq *q)
-{
-	if (!q)
-		return;;
-	THREADSAFEQ_LOCK(q);
-	q->signal_data = NULL;
-	q->on_append = NULL;
-	q->on_broadcast = NULL;
-	THREADSAFEQ_UNLOCK(q);
-}
-
-static int
-threadsafeq_connect(struct threadsafeq *q, void *signal_data,  void (*on_append)(void *), void (*on_broadcast)(void *))
-{
-	int	ret;
-
-	if (!q)
-		return (-1);
-	ret = 0;
-	THREADSAFEQ_LOCK(q);
-	if (!q->signal_data && !q->on_append && !q->on_broadcast)
-	{
-		q->signal_data = signal_data;
-		q->on_append = on_append;
-		q->on_broadcast = on_broadcast;
-	}
-	else
-		ret = -1;
-	THREADSAFEQ_UNLOCK(q);
-	return (ret);
-}
-
-static int
-threadsafeq_append_ops(struct threadsafeq *q, struct qnode *node, int signal_f)
-{
-	struct qnode_buff	*curr;
-	int			ret;
-
-	if (!q || !node)
-		return (-1);
-	ret = 0;
-	THREADSAFEQ_LOCK(q);
-	curr = q->tail;
-	if (curr && curr->wi == curr->sz)
-	{
-		curr->next = qnode_buff_new(q->buff_sz);
-		curr = curr->next;
-		q->tail =  curr;
-	}
-	else if (!curr)
-	{
-		curr = qnode_buff_new(q->buff_sz);
-		q->head =  curr;
-		q->tail =  curr;
-	}
-	if (curr)
-	{
-		curr->nodev[curr->wi++] = *node;
-		atomic_fetch_add(&q->n, 1);
-	}
-	else
-		ret = -1;
-	THREADSAFEQ_UNLOCK(q);
-	if (signal_f && !ret && q->on_append)
-		q->on_append(q->signal_data);
-	return (ret);
-}
-
-int
-threadsafeq_append(struct threadsafeq *q, struct qnode *node)
-{
-	if (!q || !node)
-		return (-1);
-	return (threadsafeq_append_ops(q, node, 1));
-}
-
-int
-threadsafeq_append_quiet(struct threadsafeq *q, struct qnode *node)
-{
-	if (!q || !node)
-		return (-1);
-	return (threadsafeq_append_ops(q, node, 0));
-}
-
-void
-threadsafeq_broadcast(struct threadsafeq *q)
-{
-	if (!q)
-		return ;
-	if (q->on_broadcast)
-		q->on_broadcast(q->signal_data);
-}
-
-int
-threadsafeq_remove(struct threadsafeq *q, struct qnode *node)
-{
-	struct qnode_buff	*curr;
-	size_t			n;
-
-	if (!q || !node)
-		return (-1);
-	n = atomic_load(&q->n);
-	while (n)
-	{
-		if (!atomic_compare_exchange_strong(&q->n, &n, n - 1))
-			continue ;
-		THREADSAFEQ_LOCK(q);
-		curr = q->head;
-		*node = curr->nodev[curr->ri++];
-		if (curr->sz == curr->ri)
-		{
-			q->head = curr->next;
-			qnode_buff_delete(curr);
-			if (!q->head)
-				q->tail = NULL;
-		}
-		THREADSAFEQ_UNLOCK(q);
-		return (0);
-	}
+	(void)buff;
+	(void)node;
+	(void)idx;
 	return (-1);
 }
 
-size_t
-threadsafeq_size(struct threadsafeq *q)
+static
+QOPS_PROTO_BUFF_WRITE(qops_ring_buff)
 {
-	if (!q)
-		return (0);
-	return (atomic_load(&q->n));
+	(void)buff;
+	(void)node;
+	return (0);
 }
 
-void
-threadsafeq_delete(struct threadsafeq *q)
+static
+QOPS_PROTO_BUFF_DELETE(qops_ring_buff)
 {
-	struct qnode_buff	*buff;
+	(void)buff;
+}
 
-	if (!q)
-		return ;
-	THREADSAFEQ_LOCK(q);
-	while (q->head)
+static struct qops_buff_ops ring_buff_ops = qops_BUFF_OPS_INIT(qops_ring_buff);
+
+static
+QOPS_PROTO_BUFF_READ(qops_static_buff)
+{
+	(void)buff;
+	(void)node;
+	return (-1);
+}
+
+static
+QOPS_PROTO_BUFF_AT(qops_static_buff)
+{
+	(void)buff;
+	(void)node;
+	(void)idx;
+	return (-1);
+}
+
+static
+QOPS_PROTO_BUFF_WRITE(qops_static_buff)
+{
+	(void)buff;
+	(void)node;
+	return (0);
+}
+
+static
+QOPS_PROTO_BUFF_DELETE(qops_static_buff)
+{
+	(void)buff;
+}
+
+static struct qops_buff_ops static_buff_ops = qops_BUFF_OPS_INIT(qops_static_buff);
+
+#include <stdio.h>
+
+static
+QOPS_PROTO_BUFF_READ(qops_linked_buff)
+{
+	struct qops_node_buff	*nb;
+	size_t			tri;
+	
+	while (1)
 	{
-		buff = q->head;
-		q->head = q->head->next;
-		qnode_buff_delete(buff);
-	}
-	THREADSAFEQ_UNLOCK(q);
-	pthread_mutex_destroy(&q->lock);
-	free(q);
+		nb = atomic_load_explicit(&buff->head, memory_order_acquire);
+		if (!nb)
+			return (-1);
+		tri = atomic_load_explicit(&nb->tri, memory_order_acquire);
+		if (tri >= nb->sz)
+		{
+			struct qops_node_buff *next_nb = atomic_load_explicit(&nb->next, memory_order_acquire);
+			if (!next_nb)
+				return (-1);
+			atomic_compare_exchange_strong_explicit(&buff->head, &nb, next_nb, memory_order_release, memory_order_acquire);
+			//qops_node_buff_delete(nb);
+		}
+		else if (tri >= atomic_load_explicit(&nb->wi, memory_order_acquire))
+			return (-1);
+		else if(atomic_compare_exchange_strong_explicit(&nb->tri, &tri, tri + 1, memory_order_release, memory_order_acquire))
+			break ;
+	}	
+	*node = nb->node_v[tri];
+	atomic_fetch_add_explicit(&nb->ri, 1, memory_order_release);
+	atomic_fetch_sub_explicit(&buff->n, 1, memory_order_relaxed);
+	return (0);
 }
 
-struct threadsafeq *
-threadsafeq_new(size_t buff_sz)
+static
+QOPS_PROTO_BUFF_AT(qops_linked_buff)
 {
-	struct threadsafeq	*q;
+	(void)buff;
+	(void)node;
+	(void)idx;
+	return (-1);
+}
 
-	q = malloc(sizeof (*q));
+static
+QOPS_PROTO_BUFF_WRITE(qops_linked_buff)
+{
+	struct qops_node_buff	*nb;
+	size_t			twi;
+
+	while (1)
+	{
+		nb = atomic_load_explicit(&buff->tail, memory_order_acquire);
+		if (!nb)
+		{
+			nb = qops_node_buff_new(buff->buff_sz);
+			if (!nb)
+				return (-1);
+			struct qops_node_buff *expected = NULL;
+			if (!atomic_compare_exchange_strong_explicit(&buff->tail, &expected, nb, memory_order_release, memory_order_acquire))
+				qops_node_buff_delete(nb);
+			else
+				atomic_store_explicit(&buff->head, nb, memory_order_release);
+			continue ;
+		}
+		twi = atomic_load_explicit(&nb->twi, memory_order_acquire);
+		if (twi >= nb->sz)
+		{
+			struct qops_node_buff *next_nb = atomic_load_explicit(&nb->next, memory_order_acquire);
+			if (next_nb)
+			{
+				atomic_compare_exchange_strong_explicit(&buff->tail, &nb, next_nb, memory_order_release, memory_order_acquire);
+				continue ;
+			}
+			struct qops_node_buff *new_nb = qops_node_buff_new(buff->buff_sz);
+			if (!new_nb)
+				return (-1);
+			struct qops_node_buff *expected = NULL;
+			if (!atomic_compare_exchange_strong_explicit(&nb->next, &expected, new_nb, memory_order_release, memory_order_acquire))
+				qops_node_buff_delete(new_nb);
+			else
+				atomic_compare_exchange_strong_explicit(&buff->tail, &nb, new_nb, memory_order_release, memory_order_acquire);
+		}
+		else if (atomic_compare_exchange_strong_explicit(&nb->twi, &twi, twi + 1, memory_order_release, memory_order_acquire))
+			break ;
+	}
+	nb->node_v[twi] = *node;
+	size_t	explicit = twi;
+	while (!atomic_compare_exchange_strong_explicit(&nb->wi, &explicit, twi + 1, memory_order_release, memory_order_acquire))
+		explicit = twi;
+	atomic_fetch_add_explicit(&buff->n, 1, memory_order_relaxed);
+	return (0);
+}
+
+static
+QOPS_PROTO_BUFF_DELETE(qops_linked_buff)
+{
+	(void)buff;
+}
+
+static struct qops_buff_ops linked_buff_ops = qops_BUFF_OPS_INIT(qops_linked_buff);
+
+
+QOPS_PROTO_BUFF_READ(qops_buff)
+{
+	if (!buff || !node)
+		return (-1);
+	return (buff->ops.read(buff, node));
+}
+
+QOPS_PROTO_BUFF_AT(qops_buff)
+{
+	if (!buff || !node)
+		return (-1);
+	return (buff->ops.at(buff, node, idx));
+}
+
+QOPS_PROTO_BUFF_WRITE(qops_buff)
+{
+	if (!buff || !node)
+		return (-1);
+	return (buff->ops.write(buff, node));
+}
+
+//QOPS_PROTO_BUFF_DELETE(qops_buff)
+//{
+//	if (!buff)
+//		return;
+//	return (buff->ops.delete(buff));
+//}
+
+QOPS_PROTO_BUFF_DELETE(qops_buff)
+{
+	struct qops_node_buff	*nb;
+	while (1)
+	{
+		do
+		{
+			nb = atomic_load_explicit(&buff->head, memory_order_acquire);
+			if (!nb)
+				goto eof_loop;
+		} while (!atomic_compare_exchange_weak_explicit(&buff->head, &nb, nb->next, memory_order_release, memory_order_acquire));
+		qops_node_buff_delete(nb);
+	}
+eof_loop:
+	pthread_mutex_destroy(&buff->mtx);
+	free(buff);
+}
+
+struct qops_buff *
+qops_buff_new(size_t buff_sz, int type)
+{
+	struct qops_buff	*q;
+
+	q = malloc(sizeof (*q) + buff_sz * sizeof (void *));
 	if (!q)
 		goto alloc_err;
-	if (0 != pthread_mutex_init(&q->lock, NULL))
-		goto mutex_err;
-	q->head = NULL;
-	q->tail = NULL;
-	q->on_append = NULL;
-	q->on_broadcast = NULL;
-	q->signal_data = NULL;
-	atomic_store(&q->n, 0);
+	switch (type)
+	{
+		case QOPS_LINKED_BUFF:
+			q->ops = linked_buff_ops;
+			break ;
+		case QOPS_STATIC_BUFF:
+			q->ops = static_buff_ops;
+			break ;
+		case QOPS_RING_BUFF:
+			q->ops = ring_buff_ops;
+			break ;
+		default:
+			goto type_err;
+	}
+	q->head = qops_node_buff_new(buff_sz);
+	if (!q->head)
+		goto alloc_node_buff_err;
+	q->tail = q->head;
+	q->delete = NULL;
 	q->buff_sz = buff_sz;
+	q->n = 0;
+	if (0 != pthread_mutex_init(&q->mtx, NULL))
+		goto mutex_err;
+	atomic_thread_fence(memory_order_seq_cst);
 	return (q);
 mutex_err:
+	qops_node_buff_delete(q->head);
+alloc_node_buff_err:
+type_err:
 	free(q);
 alloc_err:
 	return (NULL);
 }
 
-_Thread_local static int workerp_local_index = -1;
 
-
-struct workerp
+size_t
+qops_buff_size(struct qops_buff *buff)
 {
-	struct threadsafeq		*q;
-	struct qbuff			*b;
-	pthread_cond_t			cond;
-	pthread_mutex_t			lock;
-	_Atomic size_t			nof_worker;
-	_Atomic size_t			idle;
-	_Atomic size_t			started;
-	_Atomic int			done;
-	pthread_t			tid[];
+	if (!buff)
+		return (0);
+	return (atomic_load_explicit(&buff->n, memory_order_relaxed));
+}
+
+
+
+
+
+_Thread_local static int qops_pool_local_index = -1;
+
+struct qops_pool
+{
+	struct qops_buff	*q;
+	pthread_cond_t		cond;
+	pthread_mutex_t		lock;
+	_Atomic size_t		nof_worker;
+	_Atomic size_t		idle;
+	_Atomic size_t		started;
+	_Atomic int		done;
+	pthread_t		tid[];
 };
 
 static void
-workerp_on_finish(void *data)
+qops_pool_on_finish(void *data)
 {
-	atomic_fetch_sub(&((struct workerp *)data)->nof_worker, 1);
+	atomic_fetch_sub(&((struct qops_pool *)data)->nof_worker, 1);
 }
 
 static void
-workerp_on_append(struct workerp *pool)
+qops_pool_on_write(struct qops_pool *pool)
 {
 	pthread_mutex_lock(&pool->lock);
 	pthread_cond_signal(&pool->cond);
@@ -350,7 +410,7 @@ workerp_on_append(struct workerp *pool)
 }
 
 static void
-workerp_on_broadcast(struct workerp *pool)
+qops_pool_on_broadcast(struct qops_pool *pool)
 {
 	pthread_mutex_lock(&pool->lock);
 	pthread_cond_broadcast(&pool->cond);
@@ -358,90 +418,91 @@ workerp_on_broadcast(struct workerp *pool)
 }
 
 static void
-workerp_wait(struct workerp *pool)
+qops_pool_wait(struct qops_pool *pool)
 {
 	pthread_mutex_lock(&pool->lock);
-	if (!atomic_load(&pool->done))
+	if (!atomic_load_explicit(&pool->done, memory_order_relaxed))
 	{
-		atomic_fetch_add(&pool->idle, 1);
+		atomic_fetch_add_explicit(&pool->idle, 1, memory_order_relaxed);
 		pthread_cond_wait(&pool->cond, &pool->lock);
-		atomic_fetch_sub(&pool->idle, 1);
+		atomic_fetch_sub_explicit(&pool->idle, 1, memory_order_relaxed);
 	}
 	pthread_mutex_unlock(&pool->lock);
 }
 
 static void
-workerp_wait_and_sz(struct workerp *pool)
+qops_pool_wait_and_sz(struct qops_pool *pool)
 {
 	pthread_mutex_lock(&pool->lock);
-	if (!atomic_load(&pool->done) && !threadsafeq_size(pool->q))
+	if (!atomic_load_explicit(&pool->done, memory_order_relaxed) && !qops_buff_size(pool->q))
 	{
-		atomic_fetch_add(&pool->idle, 1);
+		atomic_fetch_add_explicit(&pool->idle, 1, memory_order_relaxed);
 		pthread_cond_wait(&pool->cond, &pool->lock);
-		atomic_fetch_sub(&pool->idle, 1);
+		atomic_fetch_sub_explicit(&pool->idle, 1, memory_order_relaxed);
 	}
 	pthread_mutex_unlock(&pool->lock);
 }
 
 static void *
-workerp_loop(void *data)
+qops_pool_loop(void *data)
 {
-	struct workerp	*pool;
-	struct qnode	node;
-	int		ret;
+	struct qops_pool	*pool;
+	struct qops_node	node;
+	int			ret;
 
 	pool = data;
-	workerp_local_index = atomic_fetch_add(&pool->started, 1);
-	pthread_cleanup_push(workerp_on_finish, data);
-	workerp_wait(pool);
-	while (!atomic_load(&pool->done))
+	qops_pool_local_index = atomic_fetch_add(&pool->started, 1);
+	pthread_cleanup_push(qops_pool_on_finish, data);
+	qops_pool_wait(pool);
+	while (!atomic_load_explicit(&pool->done, memory_order_relaxed))
 	{
-		ret = threadsafeq_remove(pool->q, &node);
+		ret = qops_buff_read(pool->q, &node);
 		if (ret)
-			workerp_wait_and_sz(pool);
+			qops_pool_wait_and_sz(pool);
 		else
-			qnode_exec(&node);
+			qops_node_exec(&node);
 	}
 	pthread_cleanup_pop(1);
 	return (NULL);
 }
 
 static void *
-workerp_loop_exec(void *data)
+qops_pool_loop_exec(void *data)
 {
-	struct workerp	*pool;
-	size_t		idx;
-	struct qbuff	*buff;
+	struct qops_pool	*pool;
+	size_t			idx;
+	struct qops_buff	*buff;
+	struct qops_node	*node;
 
 	pool = data;
-	workerp_local_index = atomic_fetch_add(&pool->started, 1);
-	pthread_cleanup_push(workerp_on_finish, data);
-	workerp_wait(pool);
-	while (!atomic_load(&pool->done))
+	qops_pool_local_index = atomic_fetch_add(&pool->started, 1);
+	pthread_cleanup_push(qops_pool_on_finish, data);
+	qops_pool_wait(pool);
+	while (!atomic_load_explicit(&pool->done, memory_order_relaxed))
 	{
-		buff = pool->b;
-		idx = workerp_local_index;
-		if (buff) while (idx < buff->wi)
+		buff = pool->q;
+		idx = qops_pool_local_index;
+		if (buff) while (!qops_buff_at(buff, &node, idx))
 		{
-			qbuff_exec(buff, idx);
+			qops_node_exec(node);
 			idx += pool->nof_worker;
 		}
-		workerp_wait(pool);
+		qops_pool_wait(pool);
 	}
 	pthread_cleanup_pop(1);
 	return (NULL);
 }
 	
 static int
-workerp_finish_request(struct workerp *pool, size_t timeout_ms)
+qops_pool_finish_request(struct qops_pool *pool, size_t timeout_ms)
 {
-	atomic_store(&pool->done, 1);
+	atomic_store_explicit(&pool->done, 1, memory_order_relaxed);
 	while (1)
 	{
-		if (!atomic_load(&pool->nof_worker))
+		if (!atomic_load_explicit(&pool->nof_worker, memory_order_relaxed))
 			return (0);
 		else
-			workerp_on_broadcast(pool);
+			qops_pool_on_broadcast(pool);
 		if (!timeout_ms)
 			break ;
 		usleep(1000);
@@ -451,9 +512,9 @@ workerp_finish_request(struct workerp *pool, size_t timeout_ms)
 }
 
 bool
-workerp_is_idle(struct workerp *pool, size_t timeout_ms)
+qops_pool_is_idle(struct qops_pool *pool, size_t timeout_ms)
 {
-	_Bool	f;
+	bool	f;
 	size_t	i;
 
 	if (!pool)
@@ -464,7 +525,7 @@ workerp_is_idle(struct workerp *pool, size_t timeout_ms)
 		i = 10;
 		while (i--)
 		{
-			f = ((atomic_load(&pool->nof_worker) == atomic_load(&pool->idle)) && !threadsafeq_size(pool->q));
+			f = ((atomic_load_explicit(&pool->nof_worker, memory_order_relaxed) == atomic_load_explicit(&pool->idle, memory_order_relaxed)) && !qops_buff_size(pool->q));
 			if (f || !timeout_ms)
 				goto endof_loop;
 			usleep(100);
@@ -477,19 +538,18 @@ endof_loop:
 }
 
 int
-workerp_get_local_index(void)
+qops_pool_get_local_index(void)
 {
-	return (workerp_local_index);
+	return (qops_pool_local_index);
 }
 
 int
-workerp_delete(struct workerp *pool)
+qops_pool_delete(struct qops_pool *pool)
 {
 	if (!pool)
 		return (0);
-	if (workerp_finish_request(pool, 100))
+	if (qops_pool_finish_request(pool, 100))
 		return (-1);
-	threadsafeq_disconnect(pool->q);
 	pthread_mutex_destroy(&pool->lock);
 	pthread_cond_destroy(&pool->cond);
 	free(pool);
@@ -497,42 +557,44 @@ workerp_delete(struct workerp *pool)
 }
 
 int
-workerp_exec(struct workerp *pool, struct qbuff *buff)
+qops_pool_exec(struct qops_pool *pool, struct qops_buff *buff)
 {
-	if (!pool || pool->q || !buff || !workerp_is_idle(pool, 0))
+	if (!pool || pool->q || !buff || !qops_pool_is_idle(pool, 0))
 		return (-1);
-	pool->b = buff;
-	workerp_on_broadcast(pool);
-	while (workerp_nof_workers(pool) == workerp_nof_idle_workers(pool))
+	pool->q = buff;
+	qops_pool_on_broadcast(pool);
+	while (qops_pool_nof_workers(pool) == qops_pool_nof_idle_workers(pool))
 		;
-	while (!workerp_is_idle(pool, 100))
+	while (!qops_pool_is_idle(pool, 100))
 		;
-	buff->ri = buff->wi;
 	return (0);
 }
 
 void
-workerp_broadcast(struct workerp *pool)
+qops_pool_broadcast(struct qops_pool *pool)
 {
-	workerp_on_broadcast(pool);
+	qops_pool_on_broadcast(pool);
 }
 
 int
-workerp_append(struct workerp *pool, struct qnode *node)
+qops_pool_write(struct qops_pool *pool, struct qops_node *node)
 {
-	return (threadsafeq_append(pool->q, node));
+	int ret = qops_buff_write(pool->q, node);
+	if (!ret)
+		qops_pool_on_write(pool);
+	return (ret);
 }
 
 int
-workerp_append_quiet(struct workerp *pool, struct qnode *node)
+qops_pool_write_quiet(struct qops_pool *pool, struct qops_node *node)
 {
-	return (threadsafeq_append_quiet(pool->q, node));
+	return (qops_buff_write(pool->q, node));
 }
 
-struct workerp	*
-workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority)
+struct qops_pool	*
+qops_pool_new_sched(struct qops_buff *q, size_t n, int sched, int priority)
 {
-	struct workerp		*pool;
+	struct qops_pool	*pool;
 	pthread_attr_t		attr;
 	struct sched_param	param;
 	size_t			i;
@@ -547,23 +609,21 @@ workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority)
 		goto set_attr_err;
 	if (pthread_attr_setschedpolicy(&attr, sched))
 		goto set_attr_err;
-	param.sched_priority = priority > WORKERP_MAX_PRIORITY? WORKERP_MAX_PRIORITY: priority;
+	param.sched_priority = priority > QOPS_MAX_PRIORITY? QOPS_MAX_PRIORITY: priority;
 	if (pthread_attr_setschedparam(&attr, &param))
 		goto set_attr_err;
 	pool = malloc(sizeof(*pool) + (sizeof(pthread_t) * n));
 	if (!pool)
 		goto alloc_err;
-	*pool = (struct workerp){.q = q, .b = NULL, .nof_worker = 0, .idle = 0, .started = 0, .done = 0};
-	if (q && threadsafeq_connect(q, pool, (void (*)(void *))workerp_on_append, (void (*)(void *))workerp_on_broadcast))
-		goto connnect_err;
+	*pool = (struct qops_pool){.q = q, .nof_worker = 0, .idle = 0, .started = 0, .done = 0};
 	if (0 != pthread_cond_init(&pool->cond, NULL))
 		goto cond_err;
 	if (0 != pthread_mutex_init(&pool->lock, NULL))
 		goto mutex_err;
 	i = 0;
-	loop = workerp_loop_exec;
+	loop = qops_pool_loop_exec;
 	if (q)
-		loop = workerp_loop;
+		loop = qops_pool_loop;
 	while (i < n)
 	{
 		if (0 != pthread_create(&pool->tid[i], &attr, loop, pool))
@@ -572,19 +632,16 @@ workerp_new_sched(struct threadsafeq *q, size_t n, int sched, int priority)
 		atomic_fetch_add(&pool->nof_worker, 1);
 	}
 	pthread_attr_destroy(&attr);
-	while (atomic_load(&pool->nof_worker) != atomic_load(&pool->idle))
+	while (atomic_load_explicit(&pool->nof_worker, memory_order_relaxed) != atomic_load_explicit(&pool->idle, memory_order_relaxed))
 		;
 	return (pool);
 thread_err:
-	while (workerp_finish_request(pool, 1))
+	while (qops_pool_finish_request(pool, 1))
 		;
 	pthread_mutex_destroy(&pool->lock);
 mutex_err:
 	pthread_cond_destroy(&pool->cond);
 cond_err:
-	threadsafeq_disconnect(q);
-connnect_err:
-	free(pool);
 alloc_err:
 set_attr_err:
 	pthread_attr_destroy(&attr);
@@ -593,26 +650,25 @@ sz_err:
 	return (NULL);
 }
 
-struct workerp	*
-workerp_new(struct threadsafeq *q, size_t n)
+struct qops_pool	*
+qops_pool_new(struct qops_buff *q, size_t n)
 {
-	return (workerp_new_sched(q, n, WORKERP_SCHED_OTHER, 0));
+	return (qops_pool_new_sched(q, n, QOPS_SCHED_OTHER, 0));
 }
 
 size_t
-workerp_nof_workers(struct workerp *pool)
+qops_pool_nof_workers(struct qops_pool *pool)
 {
-	return (atomic_load(&pool->nof_worker));
+	return (atomic_load_explicit(&pool->nof_worker, memory_order_relaxed));
 }
 
 size_t
-workerp_nof_idle_workers(struct workerp *pool)
+qops_pool_nof_idle_workers(struct qops_pool *pool)
 {
-	return (atomic_load(&pool->idle));
+	return (atomic_load_explicit(&pool->idle, memory_order_relaxed));
 }
 
 
 #ifdef __cplusplus
 }
 #endif
-
