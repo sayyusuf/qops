@@ -43,6 +43,12 @@ qops_node_exec(struct qops_node *node)
 }
 
 
+struct qops_node_entry
+{
+	struct qops_node		node;
+	_Atomic bool			wok;
+};
+
 struct qops_node_buff
 {
 	size_t					sz;
@@ -51,7 +57,7 @@ struct qops_node_buff
 	_Atomic size_t				wi;
 	_Atomic size_t				twi;
 	_Atomic (struct qops_node_buff *)	next;
-	struct qops_node			node_v[];
+	struct qops_node_entry			node_v[];
 };
 
 static struct qops_node_buff *
@@ -61,7 +67,7 @@ qops_node_buff_new(size_t size)
 
 	if (!size)
 		size = QOPS_NODE_BUFF_DEFSIZE;
-	buff = malloc(sizeof (*buff) + (sizeof (struct qops_node) * size));
+	buff = calloc(sizeof (*buff) + (sizeof (struct qops_node_entry) * size), 1);
 	if (!buff)
 		return (NULL);
 	buff->sz = size;
@@ -76,7 +82,7 @@ qops_node_buff_new(size_t size)
 static void
 qops_node_buff_delete(struct qops_node_buff *buff)
 {
-	struct qops_node	*node;
+	struct qops_node_entry	*entry;
 
 	if (!buff)
 		return ;
@@ -84,9 +90,9 @@ qops_node_buff_delete(struct qops_node_buff *buff)
 	{
 		if (buff->ri >= buff->sz)
 			buff->ri = buff->ri % buff->sz;
-		node = buff->node_v + buff->ri++;
-		if (node->cleanup)
-			node->cleanup(node->data);
+		entry = buff->node_v + buff->ri++;
+		if (entry->node.cleanup)
+			entry->node.cleanup(entry->node.data);
 	}
 	free(buff);
 }
@@ -186,14 +192,18 @@ QOPS_PROTO_BUFF_READ(qops_linked_buff)
 {
 	struct qops_node_buff	*nb;
 	size_t			tri;
+	size_t			wi;
 	
 	while (1)
 	{
 		nb = atomic_load_explicit(&buff->head, memory_order_acquire);
 		if (!nb)
 			return (-1);
-		tri = atomic_load_explicit(&nb->tri, memory_order_acquire);
-		if (tri >= nb->sz)
+		tri = atomic_load_explicit(&nb->tri, memory_order_relaxed);
+		wi = atomic_load_explicit(&nb->wi, memory_order_relaxed);
+		if (tri < wi && atomic_compare_exchange_weak_explicit(&nb->tri, &tri, tri + 1, memory_order_release, memory_order_acquire))
+				break;
+		else if (tri >= nb->sz)
 		{
 			struct qops_node_buff *next_nb = atomic_load_explicit(&nb->next, memory_order_acquire);
 			if (!next_nb)
@@ -201,12 +211,12 @@ QOPS_PROTO_BUFF_READ(qops_linked_buff)
 			atomic_compare_exchange_strong_explicit(&buff->head, &nb, next_nb, memory_order_release, memory_order_acquire);
 			//qops_node_buff_delete(nb);
 		}
-		else if (tri >= atomic_load_explicit(&nb->wi, memory_order_acquire))
+		else if (tri >= wi)
 			return (-1);
-		else if(atomic_compare_exchange_strong_explicit(&nb->tri, &tri, tri + 1, memory_order_release, memory_order_acquire))
-			break ;
-	}	
-	*node = nb->node_v[tri];
+	}
+	while (!atomic_load_explicit(&nb->node_v[tri].wok, memory_order_acquire))
+		;
+	*node = nb->node_v[tri].node;
 	atomic_fetch_add_explicit(&nb->ri, 1, memory_order_release);
 	atomic_fetch_sub_explicit(&buff->n, 1, memory_order_relaxed);
 	return (0);
@@ -225,48 +235,52 @@ static
 QOPS_PROTO_BUFF_WRITE(qops_linked_buff)
 {
 	struct qops_node_buff	*nb;
+	struct qops_node_buff	*expected;
+	struct qops_node_buff	*next_nb;
 	size_t			twi;
 
 	while (1)
 	{
 		nb = atomic_load_explicit(&buff->tail, memory_order_acquire);
-		if (!nb)
+		if (nb)
+		{
+			twi = atomic_load_explicit(&nb->twi, memory_order_relaxed);
+			if (twi < nb->sz && atomic_compare_exchange_weak_explicit(&nb->twi, &twi, twi + 1, memory_order_release, memory_order_acquire))
+				break;
+			else if (twi >= nb->sz)
+			{
+				next_nb = atomic_load_explicit(&nb->next, memory_order_acquire);
+				if (!next_nb)
+				{
+					next_nb = qops_node_buff_new(buff->buff_sz);
+					if (!next_nb)
+						return (-1);
+					expected = NULL;
+					if (!atomic_compare_exchange_weak_explicit(&nb->next, &expected, next_nb, memory_order_release, memory_order_acquire))
+					{
+						qops_node_buff_delete(next_nb);
+						continue ;
+					}
+				}
+				atomic_compare_exchange_weak_explicit(&buff->tail, &nb, next_nb, memory_order_release, memory_order_acquire);
+			}
+		}
+		else
 		{
 			nb = qops_node_buff_new(buff->buff_sz);
 			if (!nb)
 				return (-1);
-			struct qops_node_buff *expected = NULL;
-			if (!atomic_compare_exchange_strong_explicit(&buff->tail, &expected, nb, memory_order_release, memory_order_acquire))
+			expected = NULL;
+			if (!atomic_compare_exchange_weak_explicit(&buff->tail, &expected, nb, memory_order_release, memory_order_acquire))
 				qops_node_buff_delete(nb);
 			else
 				atomic_store_explicit(&buff->head, nb, memory_order_release);
 			continue ;
 		}
-		twi = atomic_load_explicit(&nb->twi, memory_order_acquire);
-		if (twi >= nb->sz)
-		{
-			struct qops_node_buff *next_nb = atomic_load_explicit(&nb->next, memory_order_acquire);
-			if (next_nb)
-			{
-				atomic_compare_exchange_strong_explicit(&buff->tail, &nb, next_nb, memory_order_release, memory_order_acquire);
-				continue ;
-			}
-			struct qops_node_buff *new_nb = qops_node_buff_new(buff->buff_sz);
-			if (!new_nb)
-				return (-1);
-			struct qops_node_buff *expected = NULL;
-			if (!atomic_compare_exchange_strong_explicit(&nb->next, &expected, new_nb, memory_order_release, memory_order_acquire))
-				qops_node_buff_delete(new_nb);
-			else
-				atomic_compare_exchange_strong_explicit(&buff->tail, &nb, new_nb, memory_order_release, memory_order_acquire);
-		}
-		else if (atomic_compare_exchange_strong_explicit(&nb->twi, &twi, twi + 1, memory_order_release, memory_order_acquire))
-			break ;
 	}
-	nb->node_v[twi] = *node;
-	size_t	explicit = twi;
-	while (!atomic_compare_exchange_strong_explicit(&nb->wi, &explicit, twi + 1, memory_order_release, memory_order_acquire))
-		explicit = twi;
+	nb->node_v[twi].node = *node;
+	nb->node_v[twi].wok = true;
+	atomic_fetch_add_explicit(&nb->wi, 1, memory_order_release);
 	atomic_fetch_add_explicit(&buff->n, 1, memory_order_relaxed);
 	return (0);
 }
@@ -374,7 +388,7 @@ qops_buff_size(struct qops_buff *buff)
 {
 	if (!buff)
 		return (0);
-	return (atomic_load_explicit(&buff->n, memory_order_relaxed));
+	return (atomic_load_explicit(&buff->n, memory_order_acquire));
 }
 
 
@@ -398,7 +412,7 @@ struct qops_pool
 static void
 qops_pool_on_finish(void *data)
 {
-	atomic_fetch_sub(&((struct qops_pool *)data)->nof_worker, 1);
+	atomic_fetch_sub_explicit(&((struct qops_pool *)data)->nof_worker, 1, memory_order_release);
 }
 
 static void
@@ -421,7 +435,7 @@ static void
 qops_pool_wait(struct qops_pool *pool)
 {
 	pthread_mutex_lock(&pool->lock);
-	if (!atomic_load_explicit(&pool->done, memory_order_relaxed))
+	if (!atomic_load_explicit(&pool->done, memory_order_acquire))
 	{
 		atomic_fetch_add_explicit(&pool->idle, 1, memory_order_relaxed);
 		pthread_cond_wait(&pool->cond, &pool->lock);
@@ -434,7 +448,7 @@ static void
 qops_pool_wait_and_sz(struct qops_pool *pool)
 {
 	pthread_mutex_lock(&pool->lock);
-	if (!atomic_load_explicit(&pool->done, memory_order_relaxed) && !qops_buff_size(pool->q))
+	if (!atomic_load_explicit(&pool->done, memory_order_acquire) && !qops_buff_size(pool->q))
 	{
 		atomic_fetch_add_explicit(&pool->idle, 1, memory_order_relaxed);
 		pthread_cond_wait(&pool->cond, &pool->lock);
@@ -451,10 +465,10 @@ qops_pool_loop(void *data)
 	int			ret;
 
 	pool = data;
-	qops_pool_local_index = atomic_fetch_add(&pool->started, 1);
+	qops_pool_local_index = atomic_fetch_add_explicit(&pool->started, 1, memory_order_relaxed);
 	pthread_cleanup_push(qops_pool_on_finish, data);
 	qops_pool_wait(pool);
-	while (!atomic_load_explicit(&pool->done, memory_order_relaxed))
+	while (!atomic_load_explicit(&pool->done, memory_order_acquire))
 	{
 		ret = qops_buff_read(pool->q, &node);
 		if (ret)
@@ -478,7 +492,7 @@ qops_pool_loop_exec(void *data)
 	qops_pool_local_index = atomic_fetch_add(&pool->started, 1);
 	pthread_cleanup_push(qops_pool_on_finish, data);
 	qops_pool_wait(pool);
-	while (!atomic_load_explicit(&pool->done, memory_order_relaxed))
+	while (!atomic_load_explicit(&pool->done, memory_order_acquire))
 	{
 		buff = pool->q;
 		idx = qops_pool_local_index;
@@ -496,10 +510,10 @@ qops_pool_loop_exec(void *data)
 static int
 qops_pool_finish_request(struct qops_pool *pool, size_t timeout_ms)
 {
-	atomic_store_explicit(&pool->done, 1, memory_order_relaxed);
+	atomic_store_explicit(&pool->done, 1, memory_order_release);
 	while (1)
 	{
-		if (!atomic_load_explicit(&pool->nof_worker, memory_order_relaxed))
+		if (!atomic_load_explicit(&pool->nof_worker, memory_order_acquire))
 			return (0);
 		else
 			qops_pool_on_broadcast(pool);
@@ -525,7 +539,7 @@ qops_pool_is_idle(struct qops_pool *pool, size_t timeout_ms)
 		i = 10;
 		while (i--)
 		{
-			f = ((atomic_load_explicit(&pool->nof_worker, memory_order_relaxed) == atomic_load_explicit(&pool->idle, memory_order_relaxed)) && !qops_buff_size(pool->q));
+			f = ((atomic_load_explicit(&pool->nof_worker, memory_order_acquire) == atomic_load_explicit(&pool->idle, memory_order_acquire)) && !qops_buff_size(pool->q));
 			if (f || !timeout_ms)
 				goto endof_loop;
 			usleep(100);
@@ -632,8 +646,8 @@ qops_pool_new_sched(struct qops_buff *q, size_t n, int sched, int priority)
 		atomic_fetch_add(&pool->nof_worker, 1);
 	}
 	pthread_attr_destroy(&attr);
-	while (atomic_load_explicit(&pool->nof_worker, memory_order_relaxed) != atomic_load_explicit(&pool->idle, memory_order_relaxed))
-		;
+	while (atomic_load_explicit(&pool->nof_worker, memory_order_acquire) != atomic_load_explicit(&pool->idle, memory_order_acquire))
+		usleep(100);
 	return (pool);
 thread_err:
 	while (qops_pool_finish_request(pool, 1))
@@ -659,13 +673,13 @@ qops_pool_new(struct qops_buff *q, size_t n)
 size_t
 qops_pool_nof_workers(struct qops_pool *pool)
 {
-	return (atomic_load_explicit(&pool->nof_worker, memory_order_relaxed));
+	return (atomic_load_explicit(&pool->nof_worker, memory_order_acquire));
 }
 
 size_t
 qops_pool_nof_idle_workers(struct qops_pool *pool)
 {
-	return (atomic_load_explicit(&pool->idle, memory_order_relaxed));
+	return (atomic_load_explicit(&pool->idle, memory_order_acquire));
 }
 
 
