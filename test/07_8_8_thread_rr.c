@@ -63,14 +63,14 @@ ft_strdup(const char *s)
 int
 func2(void *data)
 {
-	struct qops_pool	*p;
+	struct qops_wp	*p;
 
-	p = (struct qops_pool *)data;
+	p = (struct qops_wp *)data;
 	while (atomic_fetch_add(&cnt, 1) < LOOP)
 	{
 		char *s = ft_strdup(DATA);
 		struct qops_node node = (struct qops_node){.func = func, .cleanup = cleanup, .err = error, .data = s};
-		qops_pool_write(p, &node);
+		qops_wp_write(p, &node);
 	}
 	return (0);
 }
@@ -78,10 +78,10 @@ func2(void *data)
 int
 main()
 {
-	struct qops_buff	*q;
-	struct qops_pool	*p;
-	struct qops_buff	*q2;
-	struct qops_pool	*p2;
+	struct qops_ds	*q;
+	struct qops_wp	*p;
+	struct qops_ds	*q2;
+	struct qops_wp	*p2;
 	size_t			i;
 
 	if (getuid())
@@ -89,23 +89,23 @@ main()
 		fprintf(stderr, "Run as root\n");
 		return (2);
 	}
-	q = qops_buff_new(BSZ, QOPS_LINKED_BUFF);
-	p = qops_pool_new_sched(q, WSZ, QOPS_SCHED_RR, 99);
-	q2 = qops_buff_new(BSZ, QOPS_LINKED_BUFF);
-	p2 = qops_pool_new(q2, WSZ);
+	q = qops_ds_new(BSZ, QOPS_DEFAULT_OPS);
+	p = qops_wp_new_sched(q, WSZ, QOPS_SCHED_RR, 99);
+	q2 = qops_ds_new(BSZ, QOPS_DEFAULT_OPS);
+	p2 = qops_wp_new(q2, WSZ);
 	i = 0;
 	while (i < WSZ)
 	{
 		struct qops_node node = (struct qops_node){.func = func2, .cleanup = NULL, .err = NULL, .data = p};
-		qops_pool_write(p2, &node);
+		qops_wp_write(p2, &node);
 		i++;
 	}
-	while (!qops_pool_is_idle(p, 100) || !qops_pool_is_idle(p2, 100))
+	while (!qops_wp_is_idle(p, 100) || !qops_wp_is_idle(p2, 100))
 		;
-	qops_pool_delete(p);
-	qops_buff_delete(q);
-	qops_pool_delete(p2);
-	qops_buff_delete(q2);
+	qops_wp_delete(p);
+	qops_ds_delete(q);
+	qops_wp_delete(p2);
+	qops_ds_delete(q2);
 	if (atomic_load(&inc) != LOOP || atomic_load(&erc))
 	{
 		fprintf(stderr, "Error: LOOP = %d, inc = %d, erc = %d\n", LOOP, atomic_load(&inc), atomic_load(&erc));

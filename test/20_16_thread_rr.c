@@ -44,8 +44,8 @@ cleanup(void *data)
 int
 main()
 {
-	struct qops_buff	*b;
-	struct qops_pool	*p;
+	struct qops_ds	*b;
+	struct qops_wp	*p;
 	size_t			i;
 
 	if (getuid())
@@ -53,24 +53,24 @@ main()
 		fprintf(stderr, "Run as root\n");
 		return (2);
 	}
-	p = qops_pool_new(NULL, WSZ);
-	b = qops_buff_new(LOOP, QOPS_STATIC_BUFF);
+	p = qops_wp_new(NULL, WSZ);
+	b = qops_ds_new(LOOP, QOPS_STATIC_BUFF);
 	i = 0;
 	while (i < LOOP)
 	{
 		struct qops_node node = (struct qops_node){.func = func, .cleanup = cleanup, .err = error, .data = DATA};
-		qops_buff_write(b, &node);
+		qops_ds_write(b, &node);
 		i++;
 	}
-	if (qops_pool_exec(p, b) != 0)
+	if (qops_wp_exec(p, b) != 0)
 	{
-		fprintf(stderr, "Error: qops_pool_exec failed\n");
-		qops_buff_delete(b);
-		qops_pool_delete(p);
+		fprintf(stderr, "Error: qops_wp_exec failed\n");
+		qops_ds_delete(b);
+		qops_wp_delete(p);
 		return (1);
 	}
-	qops_buff_delete(b);
-	qops_pool_delete(p);
+	qops_ds_delete(b);
+	qops_wp_delete(p);
 	if (atomic_load(&inc) != LOOP || atomic_load(&erc))
 	{
 		fprintf(stderr, "Error: LOOP = %d, inc = %d, erc = %d\n", LOOP, atomic_load(&inc), atomic_load(&erc));

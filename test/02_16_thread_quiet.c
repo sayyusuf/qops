@@ -70,25 +70,25 @@ ft_strdup(const char *s)
 int
 main()
 {
-	struct qops_buff	*q;
-	struct qops_pool	*p;
+	struct qops_ds	*q;
+	struct qops_wp	*p;
 	size_t			i;
 
-	q = qops_buff_new(BSZ, QOPS_LINKED_BUFF);
-	p = qops_pool_new(q, WSZ);
+	q = qops_ds_new(BSZ, QOPS_DEFAULT_OPS);
+	p = qops_wp_new(q, WSZ);
 	i = 0;
 	while (i < LOOP)
 	{
 		char *str = ft_strdup(DATA);
 		struct qops_node node = (struct qops_node){.func = func, .cleanup = cleanup, .err = error, .data = str};
-		qops_pool_write_quiet(p, &node);
+		qops_wp_write_quiet(p, &node);
 		i++;
 	}
-	qops_pool_broadcast(p);
-	while (!qops_pool_is_idle(p, 100))
+	qops_wp_broadcast(p);
+	while (!qops_wp_is_idle(p, 100))
 		;
-	qops_pool_delete(p);
-	qops_buff_delete(q);
+	qops_wp_delete(p);
+	qops_ds_delete(q);
 	if (atomic_load(&inc) != LOOP || atomic_load(&erc))
 	{
 		fprintf(stderr, "Error: LOOP = %d, inc = %d, erc = %d\n", LOOP, atomic_load(&inc), atomic_load(&erc));

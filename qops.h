@@ -18,9 +18,14 @@ extern "C" {
 #define QOPS_SCHED_OTHER	SCHED_OTHER
 #define QOPS_SCHED_RR		SCHED_RR
 #define QOPS_SCHED_FIFO		SCHED_FIFO
+
 #define QOPS_LINKED_BUFF	0
 #define QOPS_STATIC_BUFF	1
 #define QOPS_RING_BUFF		2
+#define QOPS_LINKED_LIST	3
+
+
+#define QOPS_DEFAULT_OPS	QOPS_LINKED_LIST
 
 struct qops_node
 {
@@ -41,31 +46,31 @@ struct qops_node
 int
 qops_node_exec(struct qops_node *node);
 
-struct qops_buff;
+struct qops_ds;
 
 /**
  * @brief Write a node to the thread-safe buffer and signal workers.
  *
  * Adds a node to the buffer and signals workers to start processing.
  *
- * @param q Pointer to the `qops_buff`.
+ * @param q Pointer to the `qops_ds`.
  * @param node Pointer to the `qops_node` to add.
  * @return 0 on success, -1 on failure.
  */
 int
-qops_buff_write(struct qops_buff *q, struct qops_node *node);
+qops_ds_write(struct qops_ds *q, struct qops_node *node);
 
 /**
  * @brief Read a node from the thread-safe buffer.
  *
  * Removes the first node from the buffer and stores it in `node`.
  *
- * @param q Pointer to the `qops_buff`.
+ * @param q Pointer to the `qops_ds`.
  * @param node Pointer to the `qops_node` where the read node will be stored.
  * @return 0 on success, -1 if the buffer is empty.
  */
 int
-qops_buff_read(struct qops_buff *q, struct qops_node *node);
+qops_ds_read(struct qops_ds *q, struct qops_node *node);
 
 
 /**
@@ -74,13 +79,13 @@ qops_buff_read(struct qops_buff *q, struct qops_node *node);
  * Reads the node at `idx` from the buffer (non-destructive access) and
  * stores a pointer to it in `node`.
  *
- * @param q Pointer to the `qops_buff`.
+ * @param q Pointer to the `qops_ds`.
  * @param node Pointer to a `qops_node *` that will receive the address of the node.
  * @param idx Index of the node to read.
  * @return 0 on success, -1 if the index is out of range or on error.
  */
 int
-qops_buff_at(struct qops_buff *q, struct qops_node **node, size_t idx);
+qops_ds_at(struct qops_ds *q, struct qops_node **node, size_t idx);
 
 
 
@@ -89,26 +94,26 @@ qops_buff_at(struct qops_buff *q, struct qops_node **node, size_t idx);
  *
  * This function returns the number of tasks in the buffer.
  *
- * @param q A pointer to the `qops_buff`.
+ * @param q A pointer to the `qops_ds`.
  * @return The size of the buffer.
  */
 size_t
-qops_buff_size(struct qops_buff *q);
+qops_ds_size(struct qops_ds *q);
 
 /**
  * @brief Delete the thread-safe buffer and release resources.
  *
  * Frees memory used by the buffer and any internal resources.
  *
- * @param q Pointer to the `qops_buff` to delete.
+ * @param q Pointer to the `qops_ds` to delete.
  */
 void
-qops_buff_delete(struct qops_buff *q);
+qops_ds_delete(struct qops_ds *q);
 
 /**
  * @brief Create a new thread-safe buffer.
  *
- * Initializes a new `qops_buff` with the specified buffer size and
+ * Initializes a new `qops_ds` with the specified buffer size and
  * implementation type.
  *
  * @param buff_sz The size of the buffer (number of entries). If 0, a default
@@ -117,15 +122,15 @@ qops_buff_delete(struct qops_buff *q);
  *               or `QOPS_RING_BUFF`.
  * @return Pointer to the newly created buffer, or NULL on allocation failure.
  */
-struct qops_buff *
-qops_buff_new(size_t buff_sz, int type);
+struct qops_ds *
+qops_ds_new(size_t buff_sz, int type);
 
 
 
 
 
 
-struct qops_pool;
+struct qops_wp;
 
 /**
  * @brief Check if the worker pool is idle.
@@ -137,7 +142,7 @@ struct qops_pool;
  * @return 1 if the pool is idle, 0 otherwise.
  */
 bool
-qops_pool_is_idle(struct qops_pool *pool, size_t timeout_ms);
+qops_wp_is_idle(struct qops_wp *pool, size_t timeout_ms);
 
 /**
  * @brief Deletes the worker pool and cleans up all resources.
@@ -148,7 +153,7 @@ qops_pool_is_idle(struct qops_pool *pool, size_t timeout_ms);
  * @return 0 on success, -1 on busy.
  */
 int
-qops_pool_delete(struct qops_pool *pool);
+qops_wp_delete(struct qops_wp *pool);
 
 /**
  * @brief Broadcasts a signal to all workers in the pool.
@@ -158,7 +163,7 @@ qops_pool_delete(struct qops_pool *pool);
  * @param pool A pointer to the worker pool.
  */
 void
-qops_pool_broadcast(struct qops_pool *pool);
+qops_wp_broadcast(struct qops_wp *pool);
 
 /**
  * @brief Write a task to the worker pool's buffer.
@@ -170,7 +175,7 @@ qops_pool_broadcast(struct qops_pool *pool);
  * @return 0 on success, -1 on failure.
  */
 int
-qops_pool_write(struct qops_pool *pool, struct qops_node *node);
+qops_wp_write(struct qops_wp *pool, struct qops_node *node);
 
 /**
  * @brief Write a task to the worker pool's buffer without signaling workers.
@@ -182,24 +187,24 @@ qops_pool_write(struct qops_pool *pool, struct qops_node *node);
  * @return 0 on success, -1 on failure.
  */
 int
-qops_pool_write_quiet(struct qops_pool *pool, struct qops_node *node);
+qops_wp_write_quiet(struct qops_wp *pool, struct qops_node *node);
 
 /**
  * @brief Creates a new worker pool.
  *
  * This function creates a new worker pool, initializes threads, and prepares the pool for processing tasks.
  *
- * @param q A pointer to the `qops_buff` for task distribution.
+ * @param q A pointer to the `qops_ds` for task distribution.
  * @param n The number of worker threads to create.
  * @return A pointer to the newly created worker pool, or NULL if allocation fails.
  */
-struct qops_pool *
-qops_pool_new(struct qops_buff *q, size_t n);
+struct qops_wp *
+qops_wp_new(struct qops_ds *q, size_t n);
 
 /**
  * @brief Creates a new worker pool with custom scheduling parameters.
  *
- * This function creates a new worker pool similar to qops_pool_new(), but allows specifying
+ * This function creates a new worker pool similar to qops_wp_new(), but allows specifying
  * a custom thread scheduling policy and priority for each worker.
  *
  * Supported scheduling policies:
@@ -207,14 +212,14 @@ qops_pool_new(struct qops_buff *q, size_t n);
  * - QOPS_SCHED_RR (real-time round-robin)
  * - QOPS_SCHED_FIFO (real-time first-in-first-out)
  *
- * @param q A pointer to the `qops_buff` for task distribution.
+ * @param q A pointer to the `qops_ds` for task distribution.
  * @param n The number of worker threads to create.
  * @param sched The scheduling policy to use for worker threads. Use one of the QOPS_SCHED_* macros.
  * @param priority The thread priority (used with real-time policies such as RR or FIFO). Ignored for SCHED_OTHER.
  * @return A pointer to the newly created worker pool, or NULL if allocation or thread setup fails.
  */
-struct qops_pool *
-qops_pool_new_sched(struct qops_buff *q, size_t n, int sched, int priority);
+struct qops_wp *
+qops_wp_new_sched(struct qops_ds *q, size_t n, int sched, int priority);
 
 /**
  * @brief Gets the index of the currently executing worker thread.
@@ -225,7 +230,7 @@ qops_pool_new_sched(struct qops_buff *q, size_t n, int sched, int priority);
  * @return The index of the current worker thread, or -1 if called from a non-worker thread.
  */
 int
-qops_pool_get_local_index(void);
+qops_wp_get_local_index(void);
 
 /**
  * @brief Get the total number of worker threads in the pool.
@@ -240,7 +245,7 @@ qops_pool_get_local_index(void);
  * @return Total number of worker threads. Returns 0 if @p pool is NULL.
  */
 size_t
-qops_pool_nof_workers(struct qops_pool *pool);
+qops_wp_nof_workers(struct qops_wp *pool);
 
 /**
  * @brief Get the current number of idle worker threads in the pool.
@@ -256,7 +261,7 @@ qops_pool_nof_workers(struct qops_pool *pool);
  * @return Number of idle workers. Returns 0 if @p pool is NULL.
  */
 size_t
-qops_pool_nof_idle_workers(struct qops_pool *pool);
+qops_wp_nof_idle_workers(struct qops_wp *pool);
 
 /**
  * @brief Execute all tasks from the buffer in the worker pool.
@@ -268,7 +273,7 @@ qops_pool_nof_idle_workers(struct qops_pool *pool);
  * @return 0 if all tasks executed, -1 if the pool is busy or on error.
  */
 int
-qops_pool_exec(struct qops_pool *pool, struct qops_buff *buff);
+qops_wp_exec(struct qops_wp *pool, struct qops_ds *buff);
 
 
 #ifdef __cplusplus
