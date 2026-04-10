@@ -6,7 +6,6 @@ extern "C" {
 #include <unistd.h>
 #include <stdlib.h>
 #include <stddef.h>
-#include <stdatomic.h>
 #include <string.h>
 #include "qops.h"
 
@@ -49,6 +48,8 @@ struct qops_node_entry
 {
 	struct qops_node			node;
 	_Atomic (struct qops_node_entry *)	next;
+	_Atomic __int64_t			hrfc;
+	_Atomic __int64_t			trfc;
 	_Atomic bool				wok;
 };
 
@@ -60,7 +61,10 @@ qops_node_entry_new(void)
 	entry = malloc(sizeof(*entry));
 	if (!entry)
 		return (NULL);
-	*entry = (struct qops_node_entry){.next = NULL, .wok = 0};
+	atomic_init(&entry->next, NULL);
+	atomic_init(&entry->hrfc, 0);
+	atomic_init(&entry->trfc, 0);
+	atomic_init(&entry->wok, 0);
 	return (entry);
 }
 
@@ -142,51 +146,76 @@ struct qops_ds_buff
 	_Atomic (struct qops_node_buff *)	root;
 };
 
+
+
+typedef __uint64_t	qops_ds_packed_t;
+typedef __uint64_t	qops_ds_ptr_t;
+typedef __uint16_t	qops_ds_counter_t;
+
+#define QOPS_DS_SHIFT	(sizeof (qops_ds_counter_t) * 8)
+#define QOPS_DS_PACK(ptr, counter)		((((qops_ds_packed_t)((qops_ds_ptr_t)(ptr))) << QOPS_DS_SHIFT) | ((qops_ds_packed_t)((qops_ds_counter_t)(counter))))
+#define QOPS_DS_UNPACK_PTR(val)	((void *)	((qops_ds_ptr_t)(val >>  QOPS_DS_SHIFT)))
+#define QOPS_DS_UNPACK_COUNTER(val)		((qops_ds_counter_t)val)
+
 struct qops_ds_list
 {
-	_Atomic (struct qops_node_entry *)	head;
-	_Atomic (struct qops_node_entry *)	tail;
+	_Alignas (sizeof (qops_ds_packed_t)) _Atomic qops_ds_packed_t	head;
+	_Alignas (sizeof (qops_ds_packed_t)) _Atomic qops_ds_packed_t	tail;
 };
 
 struct qops_ds
 {
-	_Atomic size_t				n;
-	size_t					buff_sz;
-	struct qops_ds_ops			ops;
+	_Atomic size_t			n;
+	size_t				buff_sz;
+	struct qops_ds_ops		ops;
 	union
 	{
-		struct qops_ds_buff		buff;
-		struct qops_ds_list		list;
+		struct qops_ds_buff	buff;
+		struct qops_ds_list	list;
 	};
 };
 
-
 /* List data structure operations */
 static
-QOPS_PROTO_DS_READ(qops_linked_list)
+QOPS_PROTO_DS_READ(qops_linked_list_lf)
 {
 	struct qops_node_entry	*next;
-	//struct qops_node_entry	*removed;
-	_Atomic(struct qops_node_entry	*)head;
-	while (1)
+	struct qops_node_entry	*head;
+	qops_ds_packed_t	val;
+	int			f;
+
+	do
 	{
-		head = atomic_load_explicit(&ds->list.head, memory_order_acquire);
+		val = atomic_fetch_add_explicit(&ds->list.head, 1, memory_order_acquire) + 1;
+		head = QOPS_DS_UNPACK_PTR(val);
 		next = atomic_load_explicit(&head->next, memory_order_acquire);
+		if (next) do 
+		{
+			f = atomic_compare_exchange_weak_explicit(&ds->list.head, &val, QOPS_DS_PACK(next, 2), memory_order_acq_rel, memory_order_acquire);
+			if (!f)
+				continue ;
+			atomic_fetch_add_explicit(&head->hrfc, QOPS_DS_UNPACK_COUNTER(val), memory_order_relaxed);
+			break ;
+		} while (head == QOPS_DS_UNPACK_PTR(val));
+		else do
+		{
+			if (atomic_compare_exchange_weak_explicit(&ds->list.head, &val, val - 1, memory_order_release, memory_order_acquire))
+				return (-1);
+		} while (head == QOPS_DS_UNPACK_PTR(val));
+		if (1 == atomic_fetch_sub_explicit(&head->hrfc, 1, memory_order_acq_rel))
+			free(head);
 		if (!next)
 			return (-1);
-		if (atomic_compare_exchange_strong_explicit(&ds->list.head, &head, next, memory_order_release, memory_order_acquire))
-			break ;
-	}
+	} while (!f);
 	*node = next->node;
-	if (!atomic_compare_exchange_strong_explicit(&next->wok, &(bool){0}, 1, memory_order_release, memory_order_acquire))
+	if (1 == atomic_fetch_sub_explicit(&next->hrfc, 1, memory_order_acq_rel))
 		free(next);
-	if (!atomic_compare_exchange_strong_explicit(&head->wok, &(bool){0}, 1, memory_order_release, memory_order_acquire))
-		free(head);
 	atomic_fetch_sub_explicit(&ds->n, 1, memory_order_relaxed);
 	return (0);
 }
+
 static
-QOPS_PROTO_DS_AT(qops_linked_list)
+QOPS_PROTO_DS_AT(qops_linked_list_lf)
 {
 	(void)ds;
 	(void)node;
@@ -195,44 +224,54 @@ QOPS_PROTO_DS_AT(qops_linked_list)
 }
 
 static
-QOPS_PROTO_DS_WRITE(qops_linked_list)
+QOPS_PROTO_DS_WRITE(qops_linked_list_lf)
 {
+	qops_ds_packed_t	val;
 	struct qops_node_entry	*nd;
 	struct qops_node_entry	*tail;
 	struct qops_node_entry	*next;
+	int			f;
+
 	nd = qops_node_entry_new();
 	if (!nd)
 		return (-1);
 	nd->node = *node;
-	while (1)
+	do
 	{
-		tail = atomic_load_explicit(&ds->list.tail, memory_order_acquire);
+		val = atomic_fetch_add_explicit(&ds->list.tail, 1, memory_order_acquire) + 1;
+		tail = QOPS_DS_UNPACK_PTR(val);
 		next = atomic_load_explicit(&tail->next, memory_order_acquire);
-		if (!next)
+		f = (!next && atomic_compare_exchange_strong_explicit(&tail->next, &next, nd, memory_order_release, memory_order_acquire));
+		next  = f? nd: next;
+		do
 		{
-			if (atomic_compare_exchange_strong_explicit(&tail->next, &(struct qops_node_entry *){NULL}, nd, memory_order_release, memory_order_acquire))
-			{
-				atomic_compare_exchange_strong_explicit(&ds->list.tail, &tail, nd, memory_order_release, memory_order_acquire);
-				break;
-			}
-		}
-		else
-			atomic_compare_exchange_strong_explicit(&ds->list.tail, &tail, next, memory_order_release, memory_order_acquire);
-	}
+			if (!atomic_compare_exchange_weak_explicit(&ds->list.tail, &val, QOPS_DS_PACK(next, 0), memory_order_release, memory_order_acquire))
+				continue ;
+			atomic_fetch_add_explicit(&tail->trfc, QOPS_DS_UNPACK_COUNTER(val), memory_order_relaxed);
+			break ;
+		} while (tail == QOPS_DS_UNPACK_PTR(val));
+		if (1 == atomic_fetch_sub_explicit(&tail->trfc, 1, memory_order_acq_rel))
+			if (1 == atomic_fetch_sub_explicit(&tail->hrfc, 1, memory_order_acq_rel))
+				free(tail);
+	} while (!f);
 	atomic_fetch_add_explicit(&ds->n, 1, memory_order_relaxed);
 	return (0);
 }
 
 static
-QOPS_PROTO_DS_DELETE(qops_linked_list)
+QOPS_PROTO_DS_DELETE(qops_linked_list_lf)
 {
 	_Atomic(struct qops_node_entry	*)head;
-	struct qops_node_entry	*next;
+	qops_ds_packed_t		val;
+	struct qops_node_entry		*next;
 
-	head = atomic_load_explicit(&ds->list.head, memory_order_acquire);
+	val = atomic_load_explicit(&ds->list.head, memory_order_acquire);
+	head = QOPS_DS_UNPACK_PTR(val);
 	while (head)
 	{
 		next = atomic_load_explicit(&head->next, memory_order_acquire);
+		if (next && next->node.cleanup)
+			next->node.cleanup(next->node.data);
 		free(head);
 		head = next;
 	}
@@ -241,9 +280,14 @@ QOPS_PROTO_DS_DELETE(qops_linked_list)
 static int
 qops_linked_list_init(struct qops_ds *ds, size_t size)
 {
-	ds->ops = QOPS_DS_OPS_INIT(qops_linked_list);
-	ds->list.head = qops_node_entry_new();
-	ds->list.tail = ds->list.head;
+	struct qops_node_entry	*entry;
+
+	entry = qops_node_entry_new();
+	if (!entry)
+		return (-1);
+	ds->ops = QOPS_DS_OPS_INIT(qops_linked_list_lf);
+	atomic_init(&ds->list.head, QOPS_DS_PACK(entry, 1));
+	atomic_init(&ds->list.tail, QOPS_DS_PACK(entry, 0));
 	(void)size;
 	return (0);
 }
@@ -445,6 +489,7 @@ QOPS_PROTO_DS_DELETE(qops_linked_buff)
 		qops_node_buff_delete(nb);
 	}
 eof_loop:
+	;
 }
 
 static int
@@ -517,7 +562,7 @@ qops_ds_new(size_t buff_sz, int type)
 		case QOPS_RING_BUFF:
 			ret = qops_ring_buff_init(ds, buff_sz);
 			break ;
-		case QOPS_LINKED_LIST:
+		case QOPS_LINKED_LIST_LF:
 			ret = qops_linked_list_init(ds, buff_sz);
 			break ;
 		default:

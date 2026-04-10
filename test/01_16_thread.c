@@ -87,7 +87,7 @@ main()
 	while (!qops_wp_is_idle(p, 100))
 		;
 	qops_wp_delete(p);
-	//qops_ds_delete(q);
+	qops_ds_delete(q);
 	if (atomic_load(&inc) != LOOP || atomic_load(&erc))
 	{
 		fprintf(stderr, "Error: LOOP = %d, inc = %d, erc = %d\n", LOOP, atomic_load(&inc), atomic_load(&erc));

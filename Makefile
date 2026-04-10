@@ -3,13 +3,14 @@ NAME = qops
 _SRC = qops.c
 _INC = qops.h
 
-EXLIBS += -lpthread
+
+EXLIBS += -lpthread -latomic
+
+EXTRAFLAGS += -O3
 
 ifdef _ADDRESS 
-EXTRAFLAGS +=  -O3
 DEBUGFLAGS += -g  -fsanitize=address
 else
-EXTRAFLAGS +=  -O3
 DEBUGFLAGS += -g  -fsanitize=thread
 endif
 

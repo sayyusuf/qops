@@ -22,10 +22,10 @@ extern "C" {
 #define QOPS_LINKED_BUFF	0
 #define QOPS_STATIC_BUFF	1
 #define QOPS_RING_BUFF		2
-#define QOPS_LINKED_LIST	3
+#define QOPS_LINKED_LIST_LF	3
 
 
-#define QOPS_DEFAULT_OPS	QOPS_LINKED_LIST
+#define QOPS_DEFAULT_OPS	QOPS_LINKED_LIST_LF
 
 struct qops_node
 {
